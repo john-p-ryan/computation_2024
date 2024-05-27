@@ -44,7 +44,7 @@ class OLGModel:
         self.mu = mu
 
     def u(self, c, l):
-        return (c**self.γ * (1-l)**(1-self.γ))**(1-self.σ) / (1-self.σ)
+        return (c**self.gamma * (1-l)**(1-self.gamma))**(1-self.sigma) / (1-self.sigma)
 
     def V_induction(self, r=.05, w=1.05, b=.2):
         # initialize value functions, policy functions and utility functions
@@ -63,7 +63,7 @@ class OLGModel:
 
 
         # Value function induction for retired first
-        for j in range(self.N - self.Jʳ - 2, -1, -1):  # age = N-1, iterate backwards
+        for j in range(self.N - self.J_r - 2, -1, -1):  # age = N-1, iterate backwards
             for a_index, a in enumerate(self.a_grid):
                 candidate_max = -np.inf  # bad candidate max
                 budget = (1 + r) * a + b  # budget
@@ -103,7 +103,7 @@ class OLGModel:
                 V_w[-1, a_index, z_index] = candidate_max  # update value function
 
         # Value function induction for workers
-        for j in range(self.Jʳ - 2, -1, -1):  # age
+        for j in range(self.J_r - 3, -1, -1):  # age = J_r-2, iterate backwards
             for z_index, z in enumerate(self.z_grid):
                 e = z * self.eta[j]
 
@@ -117,7 +117,7 @@ class OLGModel:
                         c = (1+r) * a + w * e * (1 - self.theta) * l - ap  # consumption given a'
 
                         if c > 0:  # check for positivity
-                            val = self.u(c, l) + self.β * np.dot(self.π[z_index], self.Vʷ[j + 1, ap_index])  # compute value function
+                            val = self.u(c, l) + self.beta * np.dot(self.pi[z_index], V_w[j + 1, ap_index])  # compute value function
                             if val > candidate_max:  # check for new max value
                                 candidate_max = val  # update max value
                                 g_w[j, a_index, z_index] = ap  # update policy function
@@ -135,7 +135,7 @@ class OLGModel:
         F_w[0, 0, :] = self.initial_dist * self.mu[0]
 
         # iterate F forward through age using policy functions for workers
-        for j in range(1, self.J_r - 1):
+        for j in range(1, self.J_r-1):
             for z_index in range(self.nz):
                 for a_index, a in enumerate(self.a_grid):
                     for zp_index in range(self.nz):
@@ -148,7 +148,7 @@ class OLGModel:
             for ap_index, ap in enumerate(self.a_grid):
                 for z_index in range(self.nz):
                     if ap == g_w[self.J_r - 2, a_index, z_index]:
-                        F_w[0, a_index] += F_w[self.J_r - 2, a_index, z_index] / (1 + self.n)
+                        F_r[0, a_index] += F_w[-1, a_index, z_index] / (1 + self.n)
 
         # iterate F forward through age using policy functions for retired
         for j in range(1, self.N - self.J_r):
