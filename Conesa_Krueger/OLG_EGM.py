@@ -89,7 +89,7 @@ class OLGModel:
         return value ** (-1/self.sigma)
     def l_from_c(self, c, coef):
         # from FOC, coef = w * z * eta * (1 - theta)
-        return (coef * c ** (-1/self.sigma) / self.psi) ** (1/self.gamma)
+        return (coef * c ** (-self.sigma) / self.psi) ** (1/self.gamma)
 
 def HH_egm(OLG, r=.05, w=1.05, b=.2):
     # solve household problem using endogenous grid method
