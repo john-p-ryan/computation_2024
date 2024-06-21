@@ -17,6 +17,7 @@ primitives = [
     ('a_min', float64),
     ('a_max', float64),
     ('na', int64),
+    ('a_grid_density', float64),
     ('a_grid', float64[:]),
     ('z_grid', float64[:]),
     ('nz', int64),
@@ -31,7 +32,7 @@ primitives = [
 class OLGModel:
     def __init__(self, 
                  beta=0.97, 
-                 gamma=0.40,
+                 gamma=2.50,
                  psi=2.0,
                  sigma=2.0, 
                  alpha=0.36, 
@@ -41,7 +42,8 @@ class OLGModel:
                  n=0.011,
                  a_min=0.00001, 
                  a_max=30.0, 
-                 na=1000, 
+                 na=1000,
+                 a_grid_density=2.0, 
                  z_grid=np.array([2.0, 0.3]), 
                  initial_dist=np.array([0.2037, 0.7963]),
                  pi=np.array([[0.9261, 0.0739], [0.0189, 0.9811]]),
@@ -62,7 +64,7 @@ class OLGModel:
         self.na = na                # number of asset grid points
         uniform_grid = np.linspace(0, 1, na)
         # Apply a nonlinear transformation to change density of points
-        self.a_grid = a_min+(a_max-a_min)*(uniform_grid**3)     # asset grid
+        self.a_grid = a_min+(a_max-a_min)*(uniform_grid**a_grid_density)     # asset grid
         self.z_grid = z_grid                            # productivity shocks
         self.nz = len(z_grid)                           # number of productivity shocks
         self.initial_dist = initial_dist                # initial distribution of productivity
@@ -103,22 +105,25 @@ def V_induction(OLG, r=.05, w=1.05, b=.2):
     V_r[-1, :] = OLG.u((1+r)*OLG.a_grid + b)
     c_r[-1, :] = (1+r)*OLG.a_grid + b
 
+    # Precompute budgets for each a
+    budgets = (1 + r) * OLG.a_grid + b
+
     # Value function induction for retired first
     for j in range(OLG.N - OLG.J_r - 2, -1, -1):  # age = N-1, iterate backwards
         for a_index, a in enumerate(OLG.a_grid):
-            candidate_max = -np.inf  # bad candidate max
-            budget = (1 + r) * a + b  # budget
+            budget = budgets[a_index]  # budget
 
-            # perform grid search for a'
-            for ap_index, ap in enumerate(OLG.a_grid):     # loop over possible selections of a'
-                c = budget - ap                             # consumption given a' selection
-                if c > 0:                                  # check for positivity
-                    val = OLG.u(c) + OLG.beta * V_r[j + 1, ap_index]  # compute value function
-                    if val > candidate_max:                                 # check for new max value
-                        candidate_max = val                                 # update max value
-                        g_r[j, a_index] = ap                                # update policy function
-                        c_r[j, a_index] = c                                 # update consumption
+            # Vectorized computation of c and val
+            c = budget - OLG.a_grid
+            valid = c > 0
+            val = np.where(valid, OLG.u(c) + OLG.beta * V_r[j + 1, :], -np.inf)
 
+            # Find the maximum value and its index
+            ap_index = np.argmax(val)
+            candidate_max = val[ap_index]
+
+            g_r[j, a_index] = OLG.a_grid[ap_index]  # update policy function
+            c_r[j, a_index] = c[ap_index]  # update consumption
             V_r[j, a_index] = candidate_max  # update value function
 
     # initialize with age J_r
@@ -160,7 +165,8 @@ def V_induction(OLG, r=.05, w=1.05, b=.2):
                     c = (1+r)*a + coef*l - ap  # consumption given a'
 
                     if c > 0:  # check for positivity
-                        pi_next, V_next = OLG.pi[z_index], V_w[j + 1, ap_index]
+                        pi_next = np.ascontiguousarray(OLG.pi[z_index, :])
+                        V_next = np.ascontiguousarray(V_w[j + 1, ap_index, :])
                         val = OLG.U(c, l) + OLG.beta * np.dot(pi_next, V_next)  # compute value function
                         if val > candidate_max:  # check for new max value
                             candidate_max = val  # update max value
@@ -172,12 +178,12 @@ def V_induction(OLG, r=.05, w=1.05, b=.2):
     return V_r, g_r, c_r, V_w, g_w, c_w, l_w
 
 @njit
-def steady_dist(OLG, g_r, g_w):
-    F_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
-    F_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
+def steady_dist(OLG, g_w, g_r):
+    h_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
+    h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
 
     # take initial dist of productivity and age 1
-    F_w[0, 0, :] = OLG.initial_dist * OLG.mu[0]
+    h_w[0, 0, :] = OLG.initial_dist * OLG.mu[0]
 
     # iterate F forward through age using policy functions for workers
     for j in range(1, OLG.J_r-1):
@@ -186,42 +192,42 @@ def steady_dist(OLG, g_r, g_w):
                 for zp_index in range(OLG.nz):
                     for ap_index, ap in enumerate(OLG.a_grid):
                         if ap == g_w[j - 1, a_index, z_index]:
-                            F_w[j, ap_index, zp_index] += F_w[j - 1, a_index, z_index] * OLG.pi[z_index, zp_index] / (1 + OLG.n)
+                            h_w[j, ap_index, zp_index] += h_w[j - 1, a_index, z_index] * OLG.pi[z_index, zp_index] / (1 + OLG.n)
 
     # take dist of initial retired from last period of employed
     for a_index, a in enumerate(OLG.a_grid):
         for ap_index, ap in enumerate(OLG.a_grid):
             for z_index in range(OLG.nz):
                 if ap == g_w[OLG.J_r - 2, a_index, z_index]:
-                    F_r[0, a_index] += F_w[-1, a_index, z_index] / (1 + OLG.n)
+                    h_r[0, a_index] += h_w[-1, a_index, z_index] / (1 + OLG.n)
 
     # iterate F forward through age using policy functions for retired
     for j in range(1, OLG.N - OLG.J_r):
         for a_index, a in enumerate(OLG.a_grid):
             for ap_index, ap in enumerate(OLG.a_grid):
                 if ap == g_r[j - 1, a_index]:
-                    F_r[j, ap_index] += F_r[j - 1, a_index] / (1 + OLG.n)
+                    h_r[j, ap_index] += h_r[j - 1, a_index] / (1 + OLG.n)
 
     # renormalize to reduce numerical error
-    denominator = np.sum(F_r) + np.sum(F_w)
-    F_r /= denominator
-    F_w /= denominator
-    return F_r, F_w
+    denominator = np.sum(h_r) + np.sum(h_w)
+    h_w /= denominator
+    h_r /= denominator
+    return h_w, h_r
 
 @njit
-def K_L(OLG, F_w, F_r, l_w):
+def K_L(OLG, h_w, h_r, l_w):
     # compute capital and labor supply implied by household decisions
     K = 0.0
     L = 0.0
     for j in range(OLG.J_r - 1):  # workers
         for a_index, a in enumerate(OLG.a_grid):
             for z_index, z in enumerate(OLG.z_grid):
-                K += F_w[j, a_index, z_index] * a
-                L += F_w[j, a_index, z_index] * z * OLG.eta[j] * l_w[j, a_index, z_index]
+                K += h_w[j, a_index, z_index] * a
+                L += h_w[j, a_index, z_index] * z * OLG.eta[j] * l_w[j, a_index, z_index]
 
     for j in range(OLG.N - OLG.J_r):
         for a_index, a in enumerate(OLG.a_grid):
-            K += F_r[j, a_index] * a
+            K += h_r[j, a_index] * a
 
     return K, L
 
@@ -239,8 +245,8 @@ def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34):
         w = (1 - OLG.alpha) * (K / L) ** OLG.alpha
         b = OLG.theta * w * L / mu_r
         _, g_r, _, _, g_w, _, l_w = V_induction(OLG, r, w, b)
-        F_r, F_w = steady_dist(OLG, g_r, g_w)
-        K_new, L_new = K_L(OLG, F_w, F_r, l_w)
+        h_w, h_r = steady_dist(OLG, g_r, g_w)
+        K_new, L_new = K_L(OLG, h_w, h_r, l_w)
         K = (1-rho) * K + rho * K_new
         L = (1-rho) * L + rho * L_new
         # print(f"K = {K}, L = {L}")        
