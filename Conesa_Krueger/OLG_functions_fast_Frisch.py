@@ -245,7 +245,7 @@ def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34):
         w = (1 - OLG.alpha) * (K / L) ** OLG.alpha
         b = OLG.theta * w * L / mu_r
         _, g_r, _, _, g_w, _, l_w = V_induction(OLG, r, w, b)
-        h_w, h_r = steady_dist(OLG, g_r, g_w)
+        h_w, h_r = steady_dist(OLG, g_w, g_r)
         K_new, L_new = K_L(OLG, h_w, h_r, l_w)
         K = (1-rho) * K + rho * K_new
         L = (1-rho) * L + rho * L_new

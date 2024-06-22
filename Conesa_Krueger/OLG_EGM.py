@@ -181,10 +181,10 @@ def HH_egm(OLG, r=.05, w=1.05, b=.2):
         c_policy_r[j, :] = c_funcs[j + OLG.J_r](a_grid)
         a_policy_r[j, :] = (1+r) * a_grid + b - c_policy_r[j, :]
 
-    return a_policy_r, a_policy_w, c_policy_r, c_policy_w, l_policy
+    return a_policy_w, a_policy_r, c_policy_w, c_policy_r, l_policy
 
 @njit
-def steady_dist_egm(OLG, a_policy_r, a_policy_w):
+def steady_dist_egm(OLG, a_policy_w, a_policy_r):
     # Initialize distributions
     h_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
     h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
@@ -261,7 +261,7 @@ def K_L(OLG, h_w, h_r, l_w):
         for a_index, a in enumerate(OLG.a_grid):
             for z_index, z in enumerate(OLG.z_grid):
                 K += h_w[j, a_index, z_index] * a
-                L += h_w[j, a_index, z_index] * z * OLG.eta[j] * l_w[j, a_index, z_index]
+                L += h_w[j, a_index, z_index] * z * OLG.eta[j] * l_w[j, z_index, a_index]
 
     for j in range(OLG.N - OLG.J_r):
         for a_index, a in enumerate(OLG.a_grid):
@@ -281,16 +281,17 @@ def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34):
         r = OLG.alpha * (L / K) ** (1 - OLG.alpha) - OLG.delta
         w = (1 - OLG.alpha) * (K / L) ** OLG.alpha
         b = OLG.theta * w * L / mu_r
-        _, g_r, _, _, g_w, _, l_w = V_induction(OLG, r, w, b)
-        F_r, F_w = steady_dist(OLG, g_r, g_w)
-        K_new, L_new = K_L(OLG, F_w, F_r, l_w)
+        a_w, a_r, _, _, l_w = HH_egm(OLG, r, w, b)
+        h_w, h_r = steady_dist_egm(OLG, a_w, a_r)
+        K_new, L_new = K_L(OLG, h_w, h_r, l_w)
         K = (1-rho) * K + rho * K_new
         L = (1-rho) * L + rho * L_new
-        print(f"K = {K}, L = {L}")
+        # print(f"K = {K}, L = {L}")
         error = max(abs(K_new - K), abs(L_new - L))
         n += 1
         if n > max_iter:
             print("No convergence")
+            print(f"K = {K}, L = {L}")
             break
 
     if n < max_iter:
