@@ -253,6 +253,96 @@ def steady_dist_egm(OLG, a_policy_w, a_policy_r):
     return h_w, h_r
 
 @njit
+def markov_simulation(pi, initial_dist, T):
+    """
+    Simulate a Markov process.
+    
+    Parameters:
+    - pi: transition matrix
+    - initial_dist: initial distribution
+    - T: number of periods to simulate
+    
+    Returns:
+    - states: array of simulated states
+    """
+    states = np.zeros(T, dtype=np.int64)
+    states[0] = np.searchsorted((np.cumsum(initial_dist) > np.random.rand()).astype(np.int64), 1)
+    
+    for t in range(1, T):
+        states[t] = np.searchsorted((np.cumsum(pi[states[t-1]]) > np.random.rand()).astype(np.int64), 1)
+    
+    return states
+
+@njit
+def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
+    """
+    Stochastic simulation method for estimating the distribution of agents.
+    
+    Parameters:
+    - OLG: instance of OLGModel class
+    - a_policy_w: asset policy function for workers (shape: [J_r-1, nz, na])
+    - a_policy_r: asset policy function for retirees (shape: [N-J_r, na])
+    - M: number of households to simulate (default: 10000)
+    
+    Returns:
+    - h_w: distribution of working households (shape: [J_r-1, na, nz])
+    - h_r: distribution of retired households (shape: [N-J_r, na])
+    """
+    
+    # Initialize arrays to store asset holdings and productivity for each household
+    asset_holdings = np.zeros((M, OLG.N))
+    productivity = np.zeros((M, OLG.J_r - 1), dtype=np.int64)
+    
+    # Simulate productivity shocks for working years
+    for m in range(M):
+        productivity[m] = markov_simulation(OLG.pi, OLG.initial_dist, OLG.J_r - 1)
+    
+    # Simulate asset accumulation
+    for m in range(M):
+        for j in range(1, OLG.J_r):
+            z = productivity[m, j-1]
+            a = asset_holdings[m, j-1]
+            a_index = np.searchsorted(OLG.a_grid, a)
+            if a_index == OLG.na:
+                a_index = OLG.na - 1
+            asset_holdings[m, j] = a_policy_w[j-1, z, a_index]
+        
+        for j in range(OLG.J_r, OLG.N):
+            a = asset_holdings[m, j-1]
+            a_index = np.searchsorted(OLG.a_grid, a)
+            if a_index == OLG.na:
+                a_index = OLG.na - 1
+            asset_holdings[m, j] = a_policy_r[j-OLG.J_r, a_index]
+    
+    # Initialize distribution arrays
+    h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
+    h_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
+    
+    # Bin the data and weight by age group
+    for j in range(OLG.J_r - 1):
+        for m in range(M):
+            z = productivity[m, j]
+            a = asset_holdings[m, j]
+            a_index = np.searchsorted(OLG.a_grid, a)
+            if a_index == OLG.na:
+                a_index = OLG.na - 1
+            h_w[j, a_index, z] += OLG.mu[j]
+    
+    for j in range(OLG.J_r, OLG.N):
+        for m in range(M):
+            a = asset_holdings[m, j]
+            a_index = np.searchsorted(OLG.a_grid, a)
+            if a_index == OLG.na:
+                a_index = OLG.na - 1
+            h_r[j-OLG.J_r, a_index] += OLG.mu[j]
+    
+    # Normalize distributions
+    h_w /= M
+    h_r /= M
+    
+    return h_w, h_r
+
+@njit
 def K_L(OLG, h_w, h_r, l_w):
     # compute capital and labor supply implied by household decisions
     K = 0.0
