@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.interpolate import CubicSpline
+from quantecon.optimize.root_finding import brentq
 from numba import njit, float64, int64
 from numba.experimental import jitclass
 
@@ -92,101 +92,92 @@ class OLGModel:
     def inv_mu_c(self, value):
         # inverse marginal utility of consumption
         return value ** (-1/self.sigma)
+    def inv_mu_l(self, value):
+        # inverse marginal utility of labor
+        return (value / self.psi) ** (1/self.gamma)
     def l_from_c(self, c, coef):
         # from FOC, coef = w * z * eta * (1 - theta)
-        return (coef * c ** (-self.sigma) / self.psi) ** (1/self.gamma)
+        l = self.inv_mu_l(coef * self.mu_c(c))
+        return np.minimum(l, 1)
 
+@njit
+def constrained_c_root(c, OLG, r, a, coef):
+    l = OLG.inv_mu_l(coef * OLG.mu_c(c))
+    l = np.minimum(l, 1)
+    return (1 + r) * a + coef * l - c
+
+@njit
 def HH_egm(OLG, r=.05, w=1.05, b=.2):
     # solve household problem using endogenous grid method
-    c_funcs = [None] * OLG.N
     a_grid = OLG.a_grid
 
-    '''
-    # find the upper bounds for assets at each working age
-    a_upper = 0.0
-    for j in range(OLG.J_r - 1):
-        period_income = w * OLG.z_grid[0] * OLG.eta[j] * (1 - OLG.theta)
-        a_upper = period_income + a_upper * (1 + r)                     # maximum assets assuming maximum income and savings
-        a_grids[j, :] = nonuniform_grid(OLG.a_min, a_upper, OLG.na)
-    
-    for j in range(OLG.J_r - 1, OLG.N):
-        a_grids[j, :] = nonuniform_grid(OLG.a_min, a_upper, OLG.na)
-    '''
+    # initialize policy functions on grid
+    a_policy_w = np.zeros((OLG.J_r-1, OLG.nz, OLG.na)) # savings policy function for workers
+    c_policy_w = np.zeros((OLG.J_r-1, OLG.nz, OLG.na)) # consumption policy function for workers
+    l_policy = np.zeros((OLG.J_r-1, OLG.nz, OLG.na))   # labor policy function for workers
+    a_policy_r = np.zeros((OLG.N-OLG.J_r + 1, OLG.na))         # savings policy function for retirees
+    c_policy_r = np.zeros((OLG.N-OLG.J_r + 1, OLG.na))         # consumption policy function for retirees
 
 
     # start at the end of life                      
-    c_r = a_grid * (1 + r) + b           # retired consumption policy
-    c_funcs[-1] = CubicSpline(a_grid, c_r) 
+    c_policy_r[-1, :] = a_grid * (1 + r) + b 
     
     # iterate backward with Euler equation
-    for j in range(OLG.N - 1, OLG.J_r - 2, -1):
-        c_next = c_funcs[j](a_grid)
-        c_r = OLG.inv_mu_c(OLG.beta * (1+r) * OLG.mu_c(c_next))
+    for j in range(OLG.N - OLG.J_r - 1, -1, -1):
+        c_r = OLG.inv_mu_c(OLG.beta * (1+r) * OLG.mu_c(c_policy_r[j+1, :]))
         # find asset holdings from BC
         new_grid = (a_grid + c_r - b) / (1 + r)
-        c_funcs[j - 1] = CubicSpline(new_grid, c_r)
+        c_policy_r[j, :] = np.interp(a_grid, new_grid, c_r)
+        a_policy_r[j, :] = (1+r) * a_grid + b - c_policy_r[j, :]
 
     # start just before retirement
-    c_funcs[OLG.J_r - 2] = []
     # find c with Euler equation, find l with FOC
     for z_index, z in enumerate(OLG.z_grid):
         coef = w * z * OLG.eta[-1] * (1 - OLG.theta)
-        c_next = c_funcs[OLG.J_r - 1](a_grid)
-        c_w = OLG.inv_mu_c(OLG.beta * (1 + r) * OLG.mu_c(c_next))
+        c_w = OLG.inv_mu_c(OLG.beta * (1 + r) * OLG.mu_c(c_policy_r[0,:]))
         l_w = OLG.l_from_c(c_w, coef)
-        l_w = np.clip(l_w, 0, 1) # enforce bounds
         # find asset holdings from BC
         new_grid = (a_grid + c_w - coef * l_w) / (1 + r)
-        # get rid of the values where new_grid is negative
-        negative_indices = np.where(new_grid < 0)
-        new_grid = np.delete(new_grid, negative_indices)
-        c_w = np.delete(c_w, negative_indices)
-        c_funcs[OLG.J_r - 2].append(CubicSpline(new_grid, c_w))
+        c_policy_w[-1, z_index, :] = np.interp(a_grid, new_grid, c_w)
+        l_policy[-1, z_index, :] = OLG.l_from_c(c_policy_w[-1, z_index, :], coef)
+        a_policy_w[-1, z_index, :] = (1+r) * a_grid + coef*l_policy[-1, z_index, :] - c_policy_w[-1, z_index, :]
 
     # iterate backwards with Euler equation for workers
-    for j in range(OLG.J_r - 2, 0, -1):
-        c_funcs[j - 1] = []
+    for j in range(OLG.J_r - 3, -1, -1):
         for z_index, z in enumerate(OLG.z_grid):
-            coef = w * z * OLG.eta[j-1] * (1 - OLG.theta)
+            coef = w * z * OLG.eta[j] * (1 - OLG.theta)
             # find the expected marginal utility of consumption in the next period
             E_mu_c = np.zeros(OLG.na)
             for zp_index in range(OLG.nz):
-                mu_c_zp = OLG.mu_c(c_funcs[j][zp_index](a_grid))
-                E_mu_c += OLG.pi[z_index, zp_index] * mu_c_zp
+                E_mu_c += OLG.pi[z_index, zp_index] * OLG.mu_c(c_policy_w[j+1, zp_index, :])
             c_w = OLG.inv_mu_c(OLG.beta * (1 + r) * E_mu_c)
             l_w = OLG.l_from_c(c_w, coef)
-            l_w = np.clip(l_w, 0, 1) # enforce bounds
             new_grid = (a_grid + c_w - coef * l_w) / (1 + r)
-            negative_indices = np.where(new_grid < OLG.a_min)
-            new_grid = np.delete(new_grid, negative_indices)
-            c_w = np.delete(c_w, negative_indices)
-            l_w = np.delete(l_w, negative_indices)
-            c_funcs[j - 1].append(CubicSpline(new_grid, c_w))
-    
-    # get policy functions on grid using c_funcs
-    a_policy_w = np.empty((OLG.J_r-1, OLG.nz, OLG.na)) # savings policy function for workers
-    a_policy_r = np.empty((OLG.N-OLG.J_r, OLG.na))         # savings policy function for retirees
-    c_policy_w = np.empty((OLG.J_r-1, OLG.nz, OLG.na)) # consumption policy function for workers
-    c_policy_r = np.empty((OLG.N-OLG.J_r, OLG.na))         # consumption policy function for retirees
-    l_policy = np.empty((OLG.J_r-1, OLG.nz, OLG.na))   # labor policy function for workers
-
-    for j in range(OLG.J_r - 1):
-        for z_index, z in enumerate(OLG.z_grid):
-            coef = w * z * OLG.eta[j] * (1 - OLG.theta)
-            c_policy_w[j, z_index, :] = c_funcs[j][z_index](a_grid)
-            l_policy[j, z_index, :] = np.clip(OLG.l_from_c(c_policy_w[j, z_index, :], coef), 0, 1)
+            c_policy_w[j, z_index, :] = np.interp(a_grid, new_grid, c_w)
+            l_policy[j, z_index, :] = OLG.l_from_c(c_policy_w[j, z_index, :], coef)
             a_policy_w[j, z_index, :] = (1+r) * a_grid + coef*l_policy[j, z_index, :] - c_policy_w[j, z_index, :]
-
-    for j in range(OLG.N - OLG.J_r):
-        c_policy_r[j, :] = c_funcs[j + OLG.J_r](a_grid)
-        a_policy_r[j, :] = (1+r) * a_grid + b - c_policy_r[j, :]
+            # replace policies less than a_min with a_min for borrowing constraint
+            # find the first index where borrowing constraint is not binding
+            last_binding = np.argmax(a_policy_w[j, z_index, :] >= OLG.a_min)
+            a_policy_w[j, z_index, :last_binding] = OLG.a_min
+            # loop over indicies where binding
+            for i in range(last_binding):
+                if l_policy[j, z_index, i] == 1:
+                    # if binding and l = 1, then just use BC
+                    c_policy_w[j, z_index, i] = (1+r) * a_grid[i] + coef - OLG.a_min
+                else:
+                    # essentially perform grid search here
+                    args = (OLG, r, a_grid[i], coef)
+                    # use root finder to find c that satisfies BC
+                    c_policy_w[j, z_index, i] = brentq(constrained_c_root, 0, c_policy_w[j, z_index, i], args).root
+                    l_policy[j, z_index, i] = OLG.l_from_c(c_policy_w[j, z_index, i], coef)
 
     return a_policy_w, a_policy_r, c_policy_w, c_policy_r, l_policy
 
 @njit
 def steady_dist_egm(OLG, a_policy_w, a_policy_r):
     # Initialize distributions
-    h_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
+    h_r = np.zeros((OLG.N - OLG.J_r + 1, OLG.na))
     h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
 
     # Initial distribution for workers
@@ -230,7 +221,7 @@ def steady_dist_egm(OLG, a_policy_w, a_policy_r):
                 h_r[0, idx] += weight_high * h_w[OLG.J_r-2, a_k, z] / (1 + OLG.n)
 
     # Iterate forward for retirees
-    for j in range(1, OLG.N - OLG.J_r):
+    for j in range(1, OLG.N - OLG.J_r + 1):
         for a_k in range(OLG.na):
             a_next = a_policy_r[j-1, a_k]
             
@@ -281,12 +272,12 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
     Parameters:
     - OLG: instance of OLGModel class
     - a_policy_w: asset policy function for workers (shape: [J_r-1, nz, na])
-    - a_policy_r: asset policy function for retirees (shape: [N-J_r, na])
+    - a_policy_r: asset policy function for retirees (shape: [N-J_r+1, na])
     - M: number of households to simulate (default: 10000)
     
     Returns:
     - h_w: distribution of working households (shape: [J_r-1, na, nz])
-    - h_r: distribution of retired households (shape: [N-J_r, na])
+    - h_r: distribution of retired households (shape: [N-J_r+1, na])
     """
     
     # Initialize arrays to store asset holdings and productivity for each household
@@ -307,7 +298,7 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
                 a_index = OLG.na - 1
             asset_holdings[m, j] = a_policy_w[j-1, z, a_index]
         
-        for j in range(OLG.J_r, OLG.N):
+        for j in range(OLG.J_r, OLG.N + 1):
             a = asset_holdings[m, j-1]
             a_index = np.searchsorted(OLG.a_grid, a)
             if a_index == OLG.na:
@@ -316,7 +307,7 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
     
     # Initialize distribution arrays
     h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
-    h_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
+    h_r = np.zeros((OLG.N - OLG.J_r + 1, OLG.na))
     
     # Bin the data and weight by age group
     for j in range(OLG.J_r - 1):
@@ -328,7 +319,7 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
                 a_index = OLG.na - 1
             h_w[j, a_index, z] += OLG.mu[j]
     
-    for j in range(OLG.J_r, OLG.N):
+    for j in range(OLG.J_r, OLG.N + 1):
         for m in range(M):
             a = asset_holdings[m, j]
             a_index = np.searchsorted(OLG.a_grid, a)
@@ -353,13 +344,13 @@ def K_L(OLG, h_w, h_r, l_w):
                 K += h_w[j, a_index, z_index] * a
                 L += h_w[j, a_index, z_index] * z * OLG.eta[j] * l_w[j, z_index, a_index]
 
-    for j in range(OLG.N - OLG.J_r):
+    for j in range(OLG.N - OLG.J_r + 1):
         for a_index, a in enumerate(OLG.a_grid):
             K += h_r[j, a_index] * a
 
     return K, L
 
-def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34):
+def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34, stochastic=False):
     # solve for the steady state using initial guess of capital and labor
 
     K, L = K0, L0
@@ -372,7 +363,10 @@ def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34):
         w = (1 - OLG.alpha) * (K / L) ** OLG.alpha
         b = OLG.theta * w * L / mu_r
         a_w, a_r, _, _, l_w = HH_egm(OLG, r, w, b)
-        h_w, h_r = steady_dist_egm(OLG, a_w, a_r)
+        if stochastic:
+            h_w, h_r = stochastic_simulation(OLG, a_w, a_r)
+        else:
+            h_w, h_r = steady_dist_egm(OLG, a_w, a_r)
         K_new, L_new = K_L(OLG, h_w, h_r, l_w)
         K = (1-rho) * K + rho * K_new
         L = (1-rho) * L + rho * L_new

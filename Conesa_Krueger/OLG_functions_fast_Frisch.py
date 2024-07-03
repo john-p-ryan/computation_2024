@@ -93,9 +93,9 @@ def V_induction(OLG, r=.05, w=1.05, b=.2):
     #OLG is an instance of OLGModel
 
     # initialize value functions, policy functions and utility functions
-    V_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
-    g_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
-    c_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
+    V_r = np.zeros((OLG.N - OLG.J_r + 1, OLG.na))
+    g_r = np.zeros((OLG.N - OLG.J_r + 1, OLG.na))
+    c_r = np.zeros((OLG.N - OLG.J_r + 1, OLG.na))
     V_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
     g_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
     l_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
@@ -109,7 +109,7 @@ def V_induction(OLG, r=.05, w=1.05, b=.2):
     budgets = (1 + r) * OLG.a_grid + b
 
     # Value function induction for retired first
-    for j in range(OLG.N - OLG.J_r - 2, -1, -1):  # age = N-1, iterate backwards
+    for j in range(OLG.N - OLG.J_r - 1, -1, -1):  # age = N-1, iterate backwards
         for a_index, a in enumerate(OLG.a_grid):
             budget = budgets[a_index]  # budget
 
@@ -179,7 +179,7 @@ def V_induction(OLG, r=.05, w=1.05, b=.2):
 
 @njit
 def steady_dist(OLG, g_w, g_r):
-    h_r = np.zeros((OLG.N - OLG.J_r, OLG.na))
+    h_r = np.zeros((OLG.N - OLG.J_r + 1, OLG.na))
     h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
 
     # take initial dist of productivity and age 1
