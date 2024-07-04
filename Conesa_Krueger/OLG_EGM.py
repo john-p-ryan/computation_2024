@@ -1,5 +1,6 @@
 import numpy as np
 from quantecon.optimize.root_finding import brentq
+from scipy.interpolate import CubicSpline
 from numba import njit, float64, int64
 from numba.experimental import jitclass
 
@@ -174,6 +175,26 @@ def HH_egm(OLG, r=.05, w=1.05, b=.2):
 
     return a_policy_w, a_policy_r, c_policy_w, c_policy_r, l_policy
 
+def policy_interpolator(OLG, c_w, c_r, l_w, a_w, a_r):
+    # this takes the policy functions on the grid and returns interpolators
+    c_funcs = [None] * OLG.N
+    l_funcs = [None] * (OLG.J_r - 1)
+    a_funcs = [None] * OLG.N
+    for j in range(OLG.J_r - 1):
+        c_funcs[j] = []
+        l_funcs[j] = []
+        a_funcs[j] = []
+        for z_index in range(OLG.nz):
+            c_funcs[j].append(CubicSpline(OLG.a_grid, c_w[j, z_index, :]))
+            l_funcs[j].append(CubicSpline(OLG.a_grid, l_w[j, z_index, :]))
+            a_funcs[j].append(CubicSpline(OLG.a_grid, a_w[j, z_index, :]))
+
+    for j in range(OLG.J_r - 1, OLG.N):
+        c_funcs[j] = CubicSpline(OLG.a_grid, c_r[j - OLG.J_r, :])
+        a_funcs[j] = CubicSpline(OLG.a_grid, a_r[j - OLG.J_r, :])
+
+    return c_funcs, l_funcs, a_funcs
+
 @njit
 def steady_dist_egm(OLG, a_policy_w, a_policy_r):
     # Initialize distributions
@@ -265,7 +286,26 @@ def markov_simulation(pi, initial_dist, T):
     return states
 
 @njit
-def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
+def generate_markov_shocks(OLG, M):
+    """
+    Generate Markov shocks for all households.
+    
+    Parameters:
+    - OLG: instance of OLGModel class
+    - M: number of households to simulate
+    
+    Returns:
+    - productivity: array of productivity shocks for all households
+    """
+    productivity = np.zeros((M, OLG.J_r - 1), dtype=np.int64)
+    
+    for m in range(M):
+        productivity[m] = markov_simulation(OLG.pi, OLG.initial_dist, OLG.J_r - 1)
+    
+    return productivity
+
+@njit
+def stochastic_simulation(OLG, a_policy_w, a_policy_r, productivity):
     """
     Stochastic simulation method for estimating the distribution of agents.
     
@@ -273,30 +313,28 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
     - OLG: instance of OLGModel class
     - a_policy_w: asset policy function for workers (shape: [J_r-1, nz, na])
     - a_policy_r: asset policy function for retirees (shape: [N-J_r+1, na])
+    - productivity: pre-generated productivity shocks (shape: [M, J_r-1])
     - M: number of households to simulate (default: 10000)
     
     Returns:
     - h_w: distribution of working households (shape: [J_r-1, na, nz])
     - h_r: distribution of retired households (shape: [N-J_r+1, na])
     """
+
+    M = productivity.shape[0]
     
-    # Initialize arrays to store asset holdings and productivity for each household
+    # Initialize arrays to store asset holdings for each household
     asset_holdings = np.zeros((M, OLG.N))
-    productivity = np.zeros((M, OLG.J_r - 1), dtype=np.int64)
-    
-    # Simulate productivity shocks for working years
-    for m in range(M):
-        productivity[m] = markov_simulation(OLG.pi, OLG.initial_dist, OLG.J_r - 1)
     
     # Simulate asset accumulation
     for m in range(M):
         for j in range(1, OLG.J_r):
-            z = productivity[m, j-1]
+            z_index = productivity[m, j-1]
             a = asset_holdings[m, j-1]
             a_index = np.searchsorted(OLG.a_grid, a)
             if a_index == OLG.na:
                 a_index = OLG.na - 1
-            asset_holdings[m, j] = a_policy_w[j-1, z, a_index]
+            asset_holdings[m, j] = a_policy_w[j-1, z_index, a_index]
         
         for j in range(OLG.J_r, OLG.N + 1):
             a = asset_holdings[m, j-1]
@@ -312,12 +350,12 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, M=10000):
     # Bin the data and weight by age group
     for j in range(OLG.J_r - 1):
         for m in range(M):
-            z = productivity[m, j]
+            z_index = productivity[m, j]
             a = asset_holdings[m, j]
             a_index = np.searchsorted(OLG.a_grid, a)
             if a_index == OLG.na:
                 a_index = OLG.na - 1
-            h_w[j, a_index, z] += OLG.mu[j]
+            h_w[j, a_index, z_index] += OLG.mu[j]
     
     for j in range(OLG.J_r, OLG.N + 1):
         for m in range(M):
@@ -350,7 +388,8 @@ def K_L(OLG, h_w, h_r, l_w):
 
     return K, L
 
-def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34, stochastic=False):
+@njit
+def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34, stochastic=False, M=10000):
     # solve for the steady state using initial guess of capital and labor
 
     K, L = K0, L0
@@ -358,19 +397,114 @@ def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34, st
     # need initial retired share, will actually be very close to this value
     mu_r = np.sum(OLG.mu[OLG.J_r - 1:])
     error = 100 * tol
+
+    # Generate Markov shocks once
+    if stochastic:
+        productivity = generate_markov_shocks(OLG, M)
+
     while error > tol:
         r = OLG.alpha * (L / K) ** (1 - OLG.alpha) - OLG.delta
         w = (1 - OLG.alpha) * (K / L) ** OLG.alpha
         b = OLG.theta * w * L / mu_r
         a_w, a_r, _, _, l_w = HH_egm(OLG, r, w, b)
         if stochastic:
-            h_w, h_r = stochastic_simulation(OLG, a_w, a_r)
+            h_w, h_r = stochastic_simulation(OLG, a_w, a_r, productivity)
         else:
             h_w, h_r = steady_dist_egm(OLG, a_w, a_r)
         K_new, L_new = K_L(OLG, h_w, h_r, l_w)
         K = (1-rho) * K + rho * K_new
         L = (1-rho) * L + rho * L_new
         # print(f"K = {K}, L = {L}")
+        error = max(abs(K_new - K), abs(L_new - L))
+        n += 1
+        if n > max_iter:
+            print("No convergence")
+            print(f"K = {K}, L = {L}")
+            break
+
+    if n < max_iter:
+        print(f"Converged in {n} iterations")
+        return K, L, r, w, b
+    
+
+def stochastic_simulation_continuous(OLG, a_funcs, productivity):
+    """
+    Stochastic simulation method for estimating the distribution of agents using continuous policy functions.
+    
+    Parameters:
+    - OLG: instance of OLGModel class
+    - c_funcs: consumption policy functions (from policy_interpolator)
+    - l_funcs: labor policy functions (from policy_interpolator)
+    - a_funcs: asset policy functions (from policy_interpolator)
+    - productivity: pre-generated productivity shocks (shape: [M, J_r-1])
+    
+    Returns:
+    - h_w: distribution of working households (shape: [J_r-1, na, nz])
+    - h_r: distribution of retired households (shape: [N-J_r+1, na])
+    """
+    M = productivity.shape[0]
+    
+    # Initialize arrays to store asset holdings for each household
+    asset_holdings = np.zeros((M, OLG.N))
+    
+    # Simulate asset accumulation
+    for m in range(M):
+        for j in range(1, OLG.J_r):
+            z_index = productivity[m, j-1]
+            a = asset_holdings[m, j-1]
+            asset_holdings[m, j] = a_funcs[j-1][z_index](a)
+        
+        for j in range(OLG.J_r, OLG.N):
+            a = asset_holdings[m, j-1]
+            asset_holdings[m, j] = a_funcs[j](a)
+    
+    # Initialize distribution arrays
+    h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
+    h_r = np.zeros((OLG.N - OLG.J_r + 1, OLG.na))
+    
+    # Bin the data and weight by age group
+    for j in range(OLG.J_r - 1):
+        for m in range(M):
+            z_index = productivity[m, j]
+            a = asset_holdings[m, j]
+            a_index = np.searchsorted(OLG.a_grid, a)
+            if a_index == OLG.na:
+                a_index = OLG.na - 1
+            h_w[j, a_index, z_index] += OLG.mu[j]
+    
+    for j in range(OLG.J_r, OLG.N):
+        for m in range(M):
+            a = asset_holdings[m, j]
+            a_index = np.searchsorted(OLG.a_grid, a)
+            if a_index == OLG.na:
+                a_index = OLG.na - 1
+            h_r[j-OLG.J_r, a_index] += OLG.mu[j]
+    
+    # Normalize distributions
+    h_w /= M
+    h_r /= M
+    
+    return h_w, h_r
+
+def market_clearing_continuous(OLG, tol=0.0001, max_iter=200, rho=0.02, K0=3.32, L0=0.34, M=10000):
+    K, L = K0, L0
+    n = 0
+    mu_r = np.sum(OLG.mu[OLG.J_r - 1:])
+    error = 100 * tol
+
+    # Generate Markov shocks once
+    productivity = generate_markov_shocks(OLG, M)
+
+    while error > tol:
+        r = OLG.alpha * (L / K) ** (1 - OLG.alpha) - OLG.delta
+        w = (1 - OLG.alpha) * (K / L) ** OLG.alpha
+        b = OLG.theta * w * L / mu_r
+        a_w, a_r, c_w, c_r, l_w = HH_egm(OLG, r, w, b)
+        _, _, a_funcs = policy_interpolator(OLG, c_w, c_r, l_w, a_w, a_r)
+        h_w, h_r = stochastic_simulation_continuous(OLG, a_funcs, productivity)
+        K_new, L_new = K_L(OLG, h_w, h_r, l_w)
+        K = (1-rho) * K + rho * K_new
+        L = (1-rho) * L + rho * L_new
         error = max(abs(K_new - K), abs(L_new - L))
         n += 1
         if n > max_iter:
