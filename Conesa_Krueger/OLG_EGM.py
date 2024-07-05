@@ -307,20 +307,18 @@ def generate_markov_shocks(OLG, M):
 @njit
 def stochastic_simulation(OLG, a_policy_w, a_policy_r, productivity):
     """
-    Stochastic simulation method for estimating the distribution of agents.
+    Stochastic simulation method for estimating the distribution of agents with continuous asset holdings.
     
     Parameters:
     - OLG: instance of OLGModel class
     - a_policy_w: asset policy function for workers (shape: [J_r-1, nz, na])
     - a_policy_r: asset policy function for retirees (shape: [N-J_r+1, na])
     - productivity: pre-generated productivity shocks (shape: [M, J_r-1])
-    - M: number of households to simulate (default: 10000)
     
     Returns:
     - h_w: distribution of working households (shape: [J_r-1, na, nz])
     - h_r: distribution of retired households (shape: [N-J_r+1, na])
     """
-
     M = productivity.shape[0]
     
     # Initialize arrays to store asset holdings for each household
@@ -331,17 +329,13 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, productivity):
         for j in range(1, OLG.J_r):
             z_index = productivity[m, j-1]
             a = asset_holdings[m, j-1]
-            a_index = np.searchsorted(OLG.a_grid, a)
-            if a_index == OLG.na:
-                a_index = OLG.na - 1
-            asset_holdings[m, j] = a_policy_w[j-1, z_index, a_index]
+            # Interpolate the policy function
+            asset_holdings[m, j] = np.interp(a, OLG.a_grid, a_policy_w[j-1, z_index])
         
         for j in range(OLG.J_r, OLG.N + 1):
             a = asset_holdings[m, j-1]
-            a_index = np.searchsorted(OLG.a_grid, a)
-            if a_index == OLG.na:
-                a_index = OLG.na - 1
-            asset_holdings[m, j] = a_policy_r[j-OLG.J_r, a_index]
+            # Interpolate the policy function
+            asset_holdings[m, j] = np.interp(a, OLG.a_grid, a_policy_r[j-OLG.J_r])
     
     # Initialize distribution arrays
     h_w = np.zeros((OLG.J_r - 1, OLG.na, OLG.nz))
@@ -352,18 +346,36 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, productivity):
         for m in range(M):
             z_index = productivity[m, j]
             a = asset_holdings[m, j]
-            a_index = np.searchsorted(OLG.a_grid, a)
-            if a_index == OLG.na:
-                a_index = OLG.na - 1
-            h_w[j, a_index, z_index] += OLG.mu[j]
+            
+            if a <= OLG.a_grid[0]:
+                h_w[j, 0, z_index] += OLG.mu[j]
+            elif a >= OLG.a_grid[-1]:
+                h_w[j, -1, z_index] += OLG.mu[j]
+            else:
+                # Find the two nearest grid points
+                idx = np.searchsorted(OLG.a_grid, a)
+                # Split the probability between the two nearest grid points
+                weight_high = (a - OLG.a_grid[idx-1]) / (OLG.a_grid[idx] - OLG.a_grid[idx-1])
+                weight_low = 1 - weight_high
+                h_w[j, idx-1, z_index] += weight_low * OLG.mu[j]
+                h_w[j, idx, z_index] += weight_high * OLG.mu[j]
     
     for j in range(OLG.J_r, OLG.N + 1):
         for m in range(M):
             a = asset_holdings[m, j]
-            a_index = np.searchsorted(OLG.a_grid, a)
-            if a_index == OLG.na:
-                a_index = OLG.na - 1
-            h_r[j-OLG.J_r, a_index] += OLG.mu[j]
+            
+            if a <= OLG.a_grid[0]:
+                h_r[j-OLG.J_r, 0] += OLG.mu[j]
+            elif a >= OLG.a_grid[-1]:
+                h_r[j-OLG.J_r, -1] += OLG.mu[j]
+            else:
+                # Find the two nearest grid points
+                idx = np.searchsorted(OLG.a_grid, a)
+                # Split the probability between the two nearest grid points
+                weight_high = (a - OLG.a_grid[idx-1]) / (OLG.a_grid[idx] - OLG.a_grid[idx-1])
+                weight_low = 1 - weight_high
+                h_r[j-OLG.J_r, idx-1] += weight_low * OLG.mu[j]
+                h_r[j-OLG.J_r, idx] += weight_high * OLG.mu[j]
     
     # Normalize distributions
     h_w /= M
