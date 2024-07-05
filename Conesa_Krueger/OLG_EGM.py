@@ -212,9 +212,9 @@ def steady_dist_egm(OLG, a_policy_w, a_policy_r):
                     a_next = a_policy_w[j-1, z, a_k]
                     
                     # Find the position of a_next in the grid
-                    if a_next <= OLG.a_grid[0]:
+                    if a_next <= OLG.a_min:
                         h_w[j, 0, z_next] += h_w[j-1, a_k, z] * OLG.pi[z, z_next] / (1 + OLG.n)
-                    elif a_next >= OLG.a_grid[-1]:
+                    elif a_next >= OLG.a_max:
                         h_w[j, -1, z_next] += h_w[j-1, a_k, z] * OLG.pi[z, z_next] / (1 + OLG.n)
                     else:
                         # Find the two nearest grid points
@@ -228,27 +228,27 @@ def steady_dist_egm(OLG, a_policy_w, a_policy_r):
     # Transition from workers to retirees
     for a_k in range(OLG.na):
         for z in range(OLG.nz):
-            a_next = a_policy_w[OLG.J_r-2, z, a_k]
+            a_next = a_policy_w[-1, z, a_k]
             
-            if a_next <= OLG.a_grid[0]:
-                h_r[0, 0] += h_w[OLG.J_r-2, a_k, z] / (1 + OLG.n)
-            elif a_next >= OLG.a_grid[-1]:
-                h_r[0, -1] += h_w[OLG.J_r-2, a_k, z] / (1 + OLG.n)
+            if a_next <= OLG.a_min:
+                h_r[0, 0] += h_w[-1, a_k, z] / (1 + OLG.n)
+            elif a_next >= OLG.a_max:
+                h_r[0, -1] += h_w[-1, a_k, z] / (1 + OLG.n)
             else:
                 idx = np.searchsorted(OLG.a_grid, a_next)
                 weight_high = (a_next - OLG.a_grid[idx-1]) / (OLG.a_grid[idx] - OLG.a_grid[idx-1])
                 weight_low = 1 - weight_high
-                h_r[0, idx-1] += weight_low * h_w[OLG.J_r-2, a_k, z] / (1 + OLG.n)
-                h_r[0, idx] += weight_high * h_w[OLG.J_r-2, a_k, z] / (1 + OLG.n)
+                h_r[0, idx-1] += weight_low * h_w[-1, a_k, z] / (1 + OLG.n)
+                h_r[0, idx] += weight_high * h_w[-1, a_k, z] / (1 + OLG.n)
 
     # Iterate forward for retirees
     for j in range(1, OLG.N - OLG.J_r + 1):
         for a_k in range(OLG.na):
             a_next = a_policy_r[j-1, a_k]
             
-            if a_next <= OLG.a_grid[0]:
+            if a_next <= OLG.a_min:
                 h_r[j, 0] += h_r[j-1, a_k] / (1 + OLG.n)
-            elif a_next >= OLG.a_grid[-1]:
+            elif a_next >= OLG.a_max:
                 h_r[j, -1] += h_r[j-1, a_k] / (1 + OLG.n)
             else:
                 idx = np.searchsorted(OLG.a_grid, a_next)
@@ -332,7 +332,7 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, productivity):
             # Interpolate the policy function
             asset_holdings[m, j] = np.interp(a, OLG.a_grid, a_policy_w[j-1, z_index])
         
-        for j in range(OLG.J_r, OLG.N + 1):
+        for j in range(OLG.J_r, OLG.N):
             a = asset_holdings[m, j-1]
             # Interpolate the policy function
             asset_holdings[m, j] = np.interp(a, OLG.a_grid, a_policy_r[j-OLG.J_r])
@@ -347,9 +347,9 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, productivity):
             z_index = productivity[m, j]
             a = asset_holdings[m, j]
             
-            if a <= OLG.a_grid[0]:
+            if a <= OLG.a_min:
                 h_w[j, 0, z_index] += OLG.mu[j]
-            elif a >= OLG.a_grid[-1]:
+            elif a >= OLG.a_max:
                 h_w[j, -1, z_index] += OLG.mu[j]
             else:
                 # Find the two nearest grid points
@@ -360,22 +360,22 @@ def stochastic_simulation(OLG, a_policy_w, a_policy_r, productivity):
                 h_w[j, idx-1, z_index] += weight_low * OLG.mu[j]
                 h_w[j, idx, z_index] += weight_high * OLG.mu[j]
     
-    for j in range(OLG.J_r, OLG.N + 1):
+    for j in range(OLG.J_r-1, OLG.N):
         for m in range(M):
             a = asset_holdings[m, j]
             
-            if a <= OLG.a_grid[0]:
-                h_r[j-OLG.J_r, 0] += OLG.mu[j]
-            elif a >= OLG.a_grid[-1]:
-                h_r[j-OLG.J_r, -1] += OLG.mu[j]
+            if a <= OLG.a_min:
+                h_r[j-OLG.J_r+1, 0] += OLG.mu[j]
+            elif a >= OLG.a_max:
+                h_r[j-OLG.J_r+1, -1] += OLG.mu[j]
             else:
                 # Find the two nearest grid points
                 idx = np.searchsorted(OLG.a_grid, a)
                 # Split the probability between the two nearest grid points
                 weight_high = (a - OLG.a_grid[idx-1]) / (OLG.a_grid[idx] - OLG.a_grid[idx-1])
                 weight_low = 1 - weight_high
-                h_r[j-OLG.J_r, idx-1] += weight_low * OLG.mu[j]
-                h_r[j-OLG.J_r, idx] += weight_high * OLG.mu[j]
+                h_r[j-OLG.J_r+1, idx-1] += weight_low * OLG.mu[j]
+                h_r[j-OLG.J_r+1, idx] += weight_high * OLG.mu[j]
     
     # Normalize distributions
     h_w /= M
@@ -479,18 +479,36 @@ def stochastic_simulation_continuous(OLG, a_funcs, productivity):
         for m in range(M):
             z_index = productivity[m, j]
             a = asset_holdings[m, j]
-            a_index = np.searchsorted(OLG.a_grid, a)
-            if a_index == OLG.na:
-                a_index = OLG.na - 1
-            h_w[j, a_index, z_index] += OLG.mu[j]
+            
+            if a <= OLG.a_min:
+                h_w[j, 0, z_index] += OLG.mu[j]
+            elif a >= OLG.a_max:
+                h_w[j, -1, z_index] += OLG.mu[j]
+            else:
+                # Find the two nearest grid points
+                idx = np.searchsorted(OLG.a_grid, a)
+                # Split the probability between the two nearest grid points
+                weight_high = (a - OLG.a_grid[idx-1]) / (OLG.a_grid[idx] - OLG.a_grid[idx-1])
+                weight_low = 1 - weight_high
+                h_w[j, idx-1, z_index] += weight_low * OLG.mu[j]
+                h_w[j, idx, z_index] += weight_high * OLG.mu[j]
     
-    for j in range(OLG.J_r, OLG.N):
+    for j in range(OLG.J_r-1, OLG.N):
         for m in range(M):
             a = asset_holdings[m, j]
-            a_index = np.searchsorted(OLG.a_grid, a)
-            if a_index == OLG.na:
-                a_index = OLG.na - 1
-            h_r[j-OLG.J_r, a_index] += OLG.mu[j]
+            
+            if a <= OLG.a_min:
+                h_r[j-OLG.J_r+1, 0] += OLG.mu[j]
+            elif a >= OLG.a_max:
+                h_r[j-OLG.J_r+1, -1] += OLG.mu[j]
+            else:
+                # Find the two nearest grid points
+                idx = np.searchsorted(OLG.a_grid, a)
+                # Split the probability between the two nearest grid points
+                weight_high = (a - OLG.a_grid[idx-1]) / (OLG.a_grid[idx] - OLG.a_grid[idx-1])
+                weight_low = 1 - weight_high
+                h_r[j-OLG.J_r+1, idx-1] += weight_low * OLG.mu[j]
+                h_r[j-OLG.J_r+1, idx] += weight_high * OLG.mu[j]
     
     # Normalize distributions
     h_w /= M
