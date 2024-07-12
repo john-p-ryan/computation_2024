@@ -105,7 +105,7 @@ class OLGModel:
 def constrained_c_root(c, OLG, r, a, coef):
     l = OLG.inv_mu_l(coef * OLG.mu_c(c))
     l = np.minimum(l, 1)
-    return (1 + r) * a + coef * l - c
+    return (1 + r) * a + coef * l - c - OLG.a_min
 
 @njit
 def HH_egm(OLG, r=.05, w=1.05, b=.2):
