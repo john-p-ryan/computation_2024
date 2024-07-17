@@ -31,6 +31,7 @@ b_policy, c_policy, n_policy = solve_HH_SS(og, r=.05, w=1.2)
 end = time.time()
 print(f'Time elapsed: {end-begin} seconds')
 
+
 #%%
 j = 10
 
@@ -135,4 +136,24 @@ plt.xlabel('Time')
 plt.ylabel('Labor Supply')
 plt.title('Transition path of Labor Supply')
 plt.legend()
+
+
+# %%
+plt.plot(r_path, label='transition path')
+# add horizontal line at r_ss
+plt.axhline(y=eqbm[2], color='r', linestyle='--', label='Steady State')
+plt.xlabel('Time')
+plt.ylabel('Interest Rate')
+plt.title('Transition path of Interest Rate')
+plt.legend()
+
+# %%
+plt.plot(w_path, label='transition path')
+# add horizontal line at w_ss
+plt.axhline(y=eqbm[3], color='r', linestyle='--', label='Steady State')
+plt.xlabel('Time')
+plt.ylabel('Wage')
+plt.title('Transition path of Wage')
+plt.legend()
+
 
