@@ -1,0 +1,26 @@
+name: hh-dev
+channels:
+- conda-forge
+dependencies:
+- python>=3.7.7, <3.13
+- numpy
+- ipython
+- scipy>=1.7.1
+- pandas>=1.2.5
+- numba
+- matplotlib
+- dask>=2.30.0
+- dask-core>=2.30.0
+- distributed>=2.30.1
+- paramtools>=0.20.0
+- jupyter
+- pytest>=6.0
+- pytest-cov
+- pytest-xdist
+- pylint
+- coverage
+- requests
+- black>=24.1.1
+- pip
+- pip:
+  - pygam
