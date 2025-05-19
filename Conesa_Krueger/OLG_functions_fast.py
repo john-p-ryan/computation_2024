@@ -227,13 +227,13 @@ def market_clearing(OLG, tol=0.0001, max_iter=200, rho=.02, K0=3.32, L0=0.34):
         K_new, L_new = K_L(OLG, F_w, F_r, l_w)
         K = (1-rho) * K + rho * K_new
         L = (1-rho) * L + rho * L_new
-        print(f"K = {K}, L = {L}")
+        # print(f"K = {K}, L = {L}")        
         error = max(abs(K_new - K), abs(L_new - L))
         n += 1
         if n > max_iter:
             print("No convergence")
             break
-
+    print(f"K = {K}, L = {L}")
     if n < max_iter:
         print(f"Converged in {n} iterations")
         return K, L, r, w, b

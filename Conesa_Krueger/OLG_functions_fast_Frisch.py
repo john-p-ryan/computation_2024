@@ -43,7 +43,7 @@ class OLGModel:
                  a_min=0.00001, 
                  a_max=30.0, 
                  na=1000,
-                 a_grid_density=2.0, 
+                 a_grid_density=1.5, 
                  z_grid=np.array([2.0, 0.3]), 
                  initial_dist=np.array([0.2037, 0.7963]),
                  pi=np.array([[0.9261, 0.0739], [0.0189, 0.9811]]),
