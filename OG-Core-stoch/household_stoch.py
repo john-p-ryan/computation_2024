@@ -909,9 +909,14 @@ def EOL_system(
         
         Returns:
             BC_error (array_like): residuals of the household budget constraint"""
+    # change n to array
+    n = np.atleast_1d(n)
+    # use labor supply equation to get consumption
     c = c_from_n(n, b, p_tilde, r, w, factor, e, z, chi_n, etr_params, mtrx_params, t, j, p, method)
+    # use consumption to get savings from savings Euler equation
     b_splus1 = b_from_c_EOL(c, p_tilde, j, p.sigma, p)
     net_tax = tax.net_taxes(r, w, b, n, bq, factor, tr, ubi, theta, t, j, False, method, e*z, etr_params, p)
+    # check the budget constraint
     BC_error = BC_residual(c, n, b, b_splus1, r, w, p_tilde, e, z, bq, net_tax, p)
     return BC_error
 
@@ -962,14 +967,168 @@ def HH_system(x,
         Returns:
             HH_error (array_like): residuals of the household budget constraint and labor supply Euler equation"""
     b = x[0]
-    n = x[1]
+    n = np.atleast_1d(x[1])
     net_tax = tax.net_taxes(r, w, b, n, bq, factor, tr, ubi, theta, t, j, False, method, e*z, etr_params, p)
     BC_error = BC_residual(c, n, b, b_splus1, r, w, p_tilde, e, z, bq, net_tax, p)
     FOC_error = FOC_labor(r, w, p_tilde, b, c, n, factor, e, z, chi_n, etr_params, mtrx_params, t, j, p, method)
     HH_error = np.array([BC_error, FOC_error])
-    return HH_error
+    return np.squeeze(HH_error)
+
+def solve_HH(
+    r,
+    w,
+    p_tilde,
+    factor,
+    tr,
+    bq,
+    ubi,
+    b_grid,
+    sigma,
+    theta,
+    chi_n,
+    rho,
+    e,
+    etr_params,
+    mtrx_params,
+    mtry_params,
+    j,
+    t,
+    p,
+    method,
+):
+    # solve household problem on transition path using endogenous grid method
+    nb = len(b_grid)
+
+    if method == "SS":
+        r = np.repeat(r, p.S)
+        w = np.repeat(w, p.S)
+        p_tilde = np.repeat(p_tilde, p.S)
+
+    # initialize policy functions on grid
+    b_policy = np.zeros((p.S, nb, p.nz))
+    c_policy = np.zeros((p.S, nb, p.nz))
+    n_policy = np.zeros((p.S, nb, p.nz))
+
+    # start at the end of life
+    for z_index, z in enumerate(p.z_grid):
+        for b_index, b in enumerate(b_grid):
+            # use root finder to solve problem at end of life
+            args = (b,
+                    p_tilde[-1],
+                    r[-1],
+                    w[-1],
+                    tr[-1],
+                    ubi,
+                    bq[-1],
+                    theta,
+                    factor,
+                    e[-1],
+                    z,
+                    chi_n[-1],
+                    etr_params[-1, :],
+                    mtrx_params[-1, :],
+                    t[-1] if hasattr(t, '__len__') else t, # Handle scalar t
+                    j,
+                    p,
+                    method)
+            n = opt.brentq(EOL_system,
+                           0.0,
+                           p.ltilde,
+                           args=args)
+            n_policy[-1, b_index, z_index] = n
+            c_policy[-1, b_index, z_index] = c_from_n(n,
+                                                      b,
+                                                      p_tilde[-1],
+                                                      r[-1],
+                                                      w[-1],
+                                                      factor,
+                                                      e[-1],
+                                                      z,
+                                                      chi_n[-1],
+                                                      etr_params,
+                                                      mtrx_params,
+                                                      t + p.S if not hasattr(t, '__len__') else t[-1] + p.S,
+                                                      j,
+                                                      p,
+                                                      method)
+            b_policy[-1, b_index, z_index] = b_from_c_EOL(c_policy[-1, b_index, z_index],
+                                                          p_tilde[-1],
+                                                          j,
+                                                          p.sigma,
+                                                          p)
+
+    # iterate backwards with Euler equation
+    for s in range(p.S-2, -1, -1):
+        for z_index, z in enumerate(p.z_grid):
+            c = c_from_b_splus1(r[s+1],
+                                w[s+1],
+                                p_tilde[s+1],
+                                p_tilde[s],
+                                b_grid,
+                                n_policy[s+1, :, :],
+                                c_policy[s+1, :, :],
+                                factor,
+                                rho[s],
+                                etr_params,
+                                mtry_params,
+                                j,
+                                t[s+1] if hasattr(t, '__len__') else t,
+                                e[s+1],
+                                z_index,
+                                p,
+                                method)
+            b = np.zeros_like(b_grid)
+            n = np.zeros_like(b_grid)
+            for b_splus1_index, b_splus1 in enumerate(b_grid): # Added enumerate
+
+                args = (c[b_splus1_index],
+                    b_splus1,
+                    r[s],
+                    w[s],
+                    p_tilde[s],
+                    factor,
+                    tr[s],
+                    ubi,
+                    bq[s],
+                    theta,
+                    e[s],
+                    z,
+                    chi_n[s],
+                    etr_params,
+                    mtrx_params,
+                    j,
+                    t[s] if hasattr(t, '__len__') else t,
+                    p,
+                    method)
+                initial_guess = np.array([b_splus1, n_policy[s+1, b_splus1_index, z_index]])
+                # Use a try-except block to handle potential root-finding failures
+                try:
+                    res = opt.root(HH_system, initial_guess, args=args)
+                    if res.success:
+                        b[b_splus1_index] = res.x[0]
+                        n[b_splus1_index] = res.x[1]
+                    else: # Handle failure, e.g., by using the guess
+                        b[b_splus1_index] = initial_guess[0]
+                        n[b_splus1_index] = initial_guess[1]
+                except Exception:
+                    b[b_splus1_index] = initial_guess[0]
+                    n[b_splus1_index] = initial_guess[1]
+
+            # Replace NaNs in endogenous grid `b` with a large number for interpolation
+            b_clean = np.nan_to_num(b, nan=b_grid.max()*2)
+            # Extrapolate linearly for points outside the solved endogenous grid
+            c_policy[s, :, z_index] = np.interp(b_grid, b_clean, c, left=c[0], right=c[-1])
+            n_policy[s, :, z_index] = np.interp(b_grid, b_clean, n, left=n[0], right=n[-1])
+            b_policy[s, :, z_index] = np.interp(b_grid, b_clean, b_grid, left=b_grid[0], right=b_grid[-1])
 
 
+    return b_policy, c_policy, n_policy
+
+
+
+
+
+'''
 def solve_HH(
     r,
     w,
@@ -1108,3 +1267,4 @@ def solve_HH(
             b_policy[s, :, z_index] = np.interp(b_grid, b, b_grid)
 
     return b_policy, c_policy, n_policy
+'''

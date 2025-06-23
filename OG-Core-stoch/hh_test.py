@@ -920,7 +920,7 @@ def setup_EOL_system_params(vector=False):
     # --- Function inputs ---
     s_EOL = p.S - 1  # End of life period index (s=2)
     r = 0.04
-    w = 1.5
+    w = np.array([1.5])
     p_tilde = 1.0
     tr = 0.1
     ubi = 0.0
@@ -937,6 +937,7 @@ def setup_EOL_system_params(vector=False):
     chi_n_s = p.chi_n[s_EOL, j]
 
     if not vector:
+        # n = np.array([0.5])
         n = 0.5
         b = 8.0
         z = 1.1
@@ -945,6 +946,7 @@ def setup_EOL_system_params(vector=False):
         b = np.array([7.0, 9.0])
         z = np.array([0.9, 1.2])
 
+    n = np.atleast_1d(n)  # Ensure n is always an array for pension
     # Manually calculate the expected residual by replicating EOL_system logic
     # 1. Consumption from labor FOC
     c = household.c_from_n(
@@ -988,4 +990,270 @@ def test_EOL_system(vector_case):
 
     assert np.allclose(test_residual, expected_residual)
 
-# %%
+# %% Test for HH_system
+
+def setup_HH_system_params(scalar_case=True):
+    """
+    Set up parameters for testing the HH_system function.
+    This creates a consistent set of parameters and variables, then
+    manually calculates the expected residuals from the budget constraint
+    and the labor FOC, which is what HH_system is designed to return.
+    """
+    p = Specifications()
+    p.sigma, p.g_y, p.ltilde = 1.5, 0.02, 1.2
+    p.b_ellipse, p.upsilon = 0.527, 1.45
+    p.J, p.S, p.T = 1, 3, 3
+    p.chi_n = np.array([0.75, 0.8, 0.9]).reshape(3, 1)
+    p.e = np.array([1.0, 0.9, 1.4]).reshape(3, 1)
+    p.e = np.tile(p.e.reshape(1, p.S, p.J), (p.T, 1, 1))
+
+    # Simplified tax system
+    p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
+    p.tau_payroll = np.array([0.15])
+    etr_params_s = np.zeros(12)
+    mtrx_params_s = np.zeros(12)
+    mtrx_params_s[10] = 0.22  # Flat 22% MTR on labor
+
+    # Function inputs
+    s = 1  # A period before the end of life
+    r, w, p_tilde = 0.05, 1.2, 1.0
+    tr, ubi, bq = 0.0, 0.0, 0.1
+    theta = np.array([0.1])
+    factor = 1.0
+    j, t, method = 0, None, "SS"
+    e_s = p.e[-1, s, j]
+    chi_n_s = p.chi_n[s, j]
+
+    if scalar_case:
+        x = np.array([8.0, 0.7])  # guess for [b, n]
+        c = 7.5
+        b_splus1 = 8.2
+        z = 1.1
+    else: # vector case for x, c, b_splus1, and z
+        x = np.array([np.array([8.0, 9.0]), np.array([0.7, 0.6])])
+        c = np.array([7.5, 8.5])
+        b_splus1 = np.array([8.2, 9.3])
+        z = np.array([1.1, 0.9])
+
+    b, n = x[0], x[1]
+
+    # need n as array for pension calculations
+    n = np.atleast_1d(n)
+
+    # Manually calculate expected residuals 
+    net_tax = tax.net_taxes(
+        r, w, b, n, bq, factor, tr, ubi, theta, t, j, False,
+        method, e_s * z, etr_params_s, p
+    )
+    BC_error = household.BC_residual(
+        c, n, b, b_splus1, r, w, p_tilde, e_s, z, bq, net_tax, p
+    )
+    FOC_error = household.FOC_labor(
+        r, w, p_tilde, b, c, n, factor, e_s, z, chi_n_s, etr_params_s,
+        mtrx_params_s, t, j, p, method
+    )
+
+    expected_HH_error = np.array([BC_error, FOC_error])
+
+    # Gather args for the function call
+    args = (
+        x, c, b_splus1, r, w, p_tilde, factor, tr, ubi, bq, theta, e_s, z,
+        chi_n_s, etr_params_s, mtrx_params_s, j, t, p, method
+    )
+    
+    # THE FIX: Squeeze the expected error for the scalar case to match the
+    # shape of the function's output. The vector case is returned as is.
+    if scalar_case:
+        return args, np.squeeze(expected_HH_error)
+    else:
+        return args, expected_HH_error
+
+
+@pytest.mark.parametrize(
+    "scalar_case", [True, False], ids=["Scalar inputs", "Vector inputs"]
+)
+def test_HH_system(scalar_case):
+    """
+    Test of the household_stoch.HH_system function.
+    This function computes the residuals for the budget constraint and the
+    labor supply FOC for a given guess of savings (b) and labor (n).
+    """
+    args, expected_error = setup_HH_system_params(scalar_case=scalar_case)
+
+    # The HH_system function expects x to be a 1D array/list.
+    # For the vector case, we cannot pass a 2D array, so we must loop.
+    if not scalar_case:
+        # Unpack args and test each element of the vector case individually
+        (x, c, b_splus1, r, w, p_tilde, factor, tr, ubi, bq, theta, e_s, z,
+        chi_n_s, etr_params_s, mtrx_params_s, j, t, p, method) = args
+
+        for i in range(len(x[0])):
+            x_i = np.array([x[0][i], x[1][i]])
+            args_i = (
+                x_i, c[i], b_splus1[i], r, w, p_tilde, factor, tr, ubi,
+                bq, theta, e_s, z[i], chi_n_s, etr_params_s,
+                mtrx_params_s, j, t, p, method
+            )
+            test_error_i = household.HH_system(*args_i)
+            expected_error_i = expected_error[:, i]
+            assert np.allclose(test_error_i, expected_error_i)
+    else: # Scalar case
+        test_error = household.HH_system(*args)
+        assert np.allclose(test_error, expected_error)
+
+# %% Test for solve_HH
+
+# Create a Specifications object for the test
+p_solve_hh = Specifications()
+p_solve_hh.S = 4  # Life periods
+p_solve_hh.J = 1  # Ability types
+p_solve_hh.T = 4  # Time periods for TPI
+p_solve_hh.beta = np.array([0.96])
+p_solve_hh.sigma = 2.0
+p_solve_hh.g_y = 0.01
+p_solve_hh.nz = 2  # Number of productivity states
+p_solve_hh.z_grid = np.array([0.8, 1.2])
+p_solve_hh.Z = np.array([[0.9, 0.1], [0.1, 0.9]])  # Markov transition matrix
+p_solve_hh.chi_b = np.array([2.0])
+p_solve_hh.ltilde = 1.0
+p_solve_hh.b_ellipse = 5.0
+p_solve_hh.upsilon = 2.0
+p_solve_hh.retire = np.array([p_solve_hh.S + 1]) # need as array?
+
+# Set 3D and 2D arrays for parameters as expected by functions
+p_solve_hh.e = np.tile(
+    np.linspace(1.0, 1.2, p_solve_hh.S).reshape(1, p_solve_hh.S, 1),
+    (p_solve_hh.T, 1, 1)
+)
+p_solve_hh.chi_n = np.tile(
+    np.array([0.5, 0.6, 0.7, 0.8]).reshape(1, p_solve_hh.S, 1),
+    (p_solve_hh.T, 1, 1)
+)
+p_solve_hh.rho = np.array([0.1, 0.1, 0.1, 1.0])  # Age-specific mortality rates
+
+# Tax parameters
+p_solve_hh.labor_income_tax_noncompliance_rate = np.zeros((p_solve_hh.T, p_solve_hh.J))
+p_solve_hh.capital_income_tax_noncompliance_rate = np.zeros((p_solve_hh.T, p_solve_hh.J))
+etr_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
+mtrx_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
+mtry_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
+mtrx_params_hh[:, :, 10] = 0.20  # 20% MTR on labor
+mtry_params_hh[:, :, 10] = 0.10  # 10% MTR on capital
+p_solve_hh.h_wealth = np.zeros(p_solve_hh.T)
+p_solve_hh.m_wealth = np.ones(p_solve_hh.T)
+p_solve_hh.p_wealth = np.zeros(p_solve_hh.T)
+p_solve_hh.tau_payroll = np.ones(p_solve_hh.T) * 0.05
+
+# Other inputs for solve_HH for a steady-state (SS) case
+r_hh = 0.04
+w_hh = 1.2
+p_tilde_hh = 1.0
+factor_hh = 1.0
+tr_hh = 0.0
+bq_hh = 0.0
+ubi_hh = 0.0
+b_grid_hh = np.linspace(0.001, 20, 10)
+theta_hh = np.array([0.0])
+j_hh = 0
+t_hh = 0  # Start time for TPI path
+
+# For SS, functions expect S-length vectors for time-varying params
+ss_r = np.ones(p_solve_hh.S) * r_hh
+ss_w = np.ones(p_solve_hh.S) * w_hh
+ss_p_tilde = np.ones(p_solve_hh.S) * p_tilde_hh
+ss_tr = np.ones(p_solve_hh.S) * tr_hh
+ss_bq = np.ones(p_solve_hh.S) * bq_hh
+# The 't' parameter in solve_HH is used for indexing TPI paths. For SS, it can be a vector of zeros.
+ss_t = np.zeros(p_solve_hh.S, dtype=int)
+ss_e = p_solve_hh.e[-1, :, j_hh]
+ss_chi_n = p_solve_hh.chi_n[-1, :, j_hh]
+ss_etr_params = etr_params_hh[-1, :, :]
+ss_mtrx_params = mtrx_params_hh[-1, :, :]
+ss_mtry_params = mtry_params_hh[-1, :, :]
+
+# This dictionary holds all arguments for the call to solve_HH
+# This is not a fixture, just a dictionary for organizing args
+solve_hh_args = {
+    "r": ss_r, "w": ss_w, "p_tilde": ss_p_tilde, "factor": factor_hh,
+    "tr": ss_tr, "bq": ss_bq, "ubi": ubi_hh, "b_grid": b_grid_hh,
+    "sigma": p_solve_hh.sigma, "theta": theta_hh, "chi_n": ss_chi_n,
+    "rho": p_solve_hh.rho, "e": ss_e, "etr_params": ss_etr_params,
+    "mtrx_params": ss_mtrx_params, "mtry_params": ss_mtry_params,
+    "j": j_hh, "t": ss_t, "p": p_solve_hh, "method": "SS"
+}
+
+
+def test_solve_HH():
+    """
+    Test of the household_stoch.solve_HH function.
+    This test runs the solver and checks for plausible properties of the
+    resulting policy functions, such as shape, monotonicity, and that
+    the choices satisfy the household's first-order conditions.
+    """
+    # Use the pre-defined arguments from the module scope
+    args = solve_hh_args
+    p = args["p"]
+    b_grid = args["b_grid"]
+    nb = len(b_grid)
+
+    # Run the solver
+    b_policy, c_policy, n_policy = household.solve_HH(**args)
+
+    # 1. Test output shapes and types
+    assert isinstance(b_policy, np.ndarray)
+    assert isinstance(c_policy, np.ndarray)
+    assert isinstance(n_policy, np.ndarray)
+    expected_shape = (p.S, nb, p.nz)
+    assert b_policy.shape == expected_shape
+    assert c_policy.shape == expected_shape
+    assert n_policy.shape == expected_shape
+
+    # 2. Test for constraint satisfaction
+    assert np.all(c_policy >= 0)
+    assert np.all(b_policy >= 0)  # Assumes borrowing constraint b >= 0
+    assert np.all(n_policy >= 0)
+    assert np.all(n_policy <= p.ltilde)
+
+    # 3. Test for monotonicity
+    # Savings and consumption should be increasing in assets for each age and shock
+    for s in range(p.S):
+        for z in range(p.nz):
+            # Differences between adjacent elements in the policy should be non-negative
+            assert np.all(np.diff(c_policy[s, :, z]) >= 0)
+            assert np.all(np.diff(b_policy[s, :, z]) >= 0)
+
+    # 4. Test consistency by checking FOC and BC for a sample point
+    # Pick a point in the middle of the grid, away from the boundaries
+    s_test = p.S - 2  # Not the last period
+    b_idx_test = nb // 2
+    z_idx_test = 0
+    b_s = b_grid[b_idx_test]
+    n_s = n_policy[s_test, b_idx_test, z_idx_test]
+    c_s = c_policy[s_test, b_idx_test, z_idx_test]
+    b_splus1 = b_policy[s_test, b_idx_test, z_idx_test]
+    z_s = p.z_grid[z_idx_test]
+
+    # Check the budget constraint for this point
+    net_tax = tax.net_taxes(
+        args["r"][s_test], args["w"][s_test], b_s, n_s, args["bq"][s_test],
+        args["factor"], args["tr"][s_test], args["ubi"], args["theta"],
+        args["t"][s_test], args["j"], False, "SS", args["e"][s_test] * z_s,
+        args["etr_params"][s_test, :], args["p"]
+    )
+    bc_resid = household.BC_residual(
+        c_s, n_s, b_s, b_splus1, args["r"][s_test], args["w"][s_test],
+        args["p_tilde"][s_test], args["e"][s_test], z_s, args["bq"][s_test],
+        net_tax, p
+    )
+
+    # Check the labor FOC for this point
+    foc_lab_resid = household.FOC_labor(
+        args["r"][s_test], args["w"][s_test], args["p_tilde"][s_test],
+        b_s, c_s, n_s, args["factor"], args["e"][s_test], z_s,
+        args["chi_n"][s_test], args["etr_params"][s_test, :],
+        args["mtrx_params"][s_test, :], args["t"][s_test], args["j"], p, "SS"
+    )
+
+    # The residuals should be very close to zero
+    assert np.isclose(bc_resid, 0, atol=1e-5)
+    assert np.isclose(foc_lab_resid, 0, atol=1e-5)
