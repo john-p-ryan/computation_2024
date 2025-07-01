@@ -1,4 +1,4 @@
-"""
+'''
 ------------------------------------------------------------------------
 This module contains the functions used to solve the transition path
 equilibrium using time path iteration (TPI) for the model with S-period
@@ -17,8 +17,7 @@ This Python module defines the following function(s):
     get_TPI()
     create_graphs()
 ------------------------------------------------------------------------
-"""
-
+'''
 # Import Packages
 import time
 import numpy as np
@@ -33,15 +32,15 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import cm
 import os
 
-"""
+'''
 ------------------------------------------------------------------------
     Functions
 ------------------------------------------------------------------------
-"""
+'''
 
 
 def get_path(x1, xT, T, spec):
-    """
+    '''
     --------------------------------------------------------------------
     This function generates a path from point x1 to point xT such that
     that the path x is a linear or quadratic function of time t.
@@ -73,20 +72,21 @@ def get_path(x1, xT, T, spec):
 
     RETURNS: xpath
     --------------------------------------------------------------------
-    """
+    '''
     if spec == "linear":
         xpath = np.linspace(x1, xT, T)
     elif spec == "quadratic":
         cc = x1
         bb = 2 * (xT - x1) / (T - 1)
         aa = (x1 - xT) / ((T - 1) ** 2)
-        xpath = aa * (np.arange(0, T) ** 2) + (bb * np.arange(0, T)) + cc
+        xpath = (aa * (np.arange(0, T) ** 2) + (bb * np.arange(0, T)) +
+                 cc)
 
     return xpath
 
 
 def inner_loop(rpath, wpath, args):
-    """
+    '''
     --------------------------------------------------------------------
     Given time paths for interest rates and wages, this function
     generates matrices for the time path of the distribution of
@@ -158,24 +158,13 @@ def inner_loop(rpath, wpath, args):
     FILES CREATED BY THIS FUNCTION: None
     RETURNS: cpath, npath, bpath, n_err_path, b_err_path, bSp1_err_path
     --------------------------------------------------------------------
-    """
-    (
-        S,
-        T2,
-        beta,
-        sigma,
-        l_tilde,
-        b_ellip,
-        upsilon,
-        chi_n_vec,
-        bvec1,
-        n_ss,
-        In_Tol,
-        diff,
-    ) = args
+    '''
+    (S, T2, beta, sigma, l_tilde, b_ellip, upsilon, chi_n_vec, bvec1,
+     n_ss, In_Tol, diff) = args
     cpath = np.zeros((S, T2 + S - 1))
     npath = np.zeros((S, T2 + S - 1))
-    bpath = np.append(bvec1.reshape((S, 1)), np.zeros((S, T2 + S - 2)), axis=1)
+    bpath = np.append(bvec1.reshape((S, 1)),
+                      np.zeros((S, T2 + S - 2)), axis=1)
     n_err_path = np.zeros((S, T2 + S - 1))
     b_err_path = np.zeros((S, T2 + S - 1))
     b_err_args = (beta, sigma, diff)
@@ -187,147 +176,89 @@ def inner_loop(rpath, wpath, args):
         if p == 1:
             # p=1 individual only has an s=S labor supply decision n_S
             n_S1_init = n_ss[-1]
-            nS1_args = (
-                wpath[0],
-                sigma,
-                l_tilde,
-                chi_n_vec[-1],
-                b_ellip,
-                upsilon,
-                diff,
-                rpath[0],
-                bvec1[-1],
-                0.0,
-            )
-            results_nS1 = opt.root(
-                hh.get_n_errors,
-                n_S1_init,
-                args=(nS1_args),
-                method="lm",
-                tol=In_Tol,
-            )
+            nS1_args = (wpath[0], sigma, l_tilde, chi_n_vec[-1],
+                        b_ellip, upsilon, diff, rpath[0], bvec1[-1],
+                        0.0)
+            results_nS1 = opt.root(hh.get_n_errors, n_S1_init,
+                                   args=(nS1_args), method='lm',
+                                   tol=In_Tol)
             n_S1 = results_nS1.x
             npath[-1, 0] = n_S1
             n_err_path[-1, 0] = results_nS1.fun
-            cpath[-1, 0] = hh.get_cons(
-                rpath[0], wpath[0], bvec1[-1], 0.0, n_S1
-            )
+            cpath[-1, 0] = hh.get_cons(rpath[0], wpath[0], bvec1[-1],
+                                       0.0, n_S1)
 
         else:
             # 1<p<S chooses b_{s+1} and n_s and has incomplete lives
             DiagMaskb = np.eye(p - 1, dtype=bool)
             DiagMaskn = np.eye(p, dtype=bool)
-            b_sp1_init = np.diag(bpath[S - p + 1 :, : p - 1])
-            n_s_init = np.hstack(
-                (n_ss[S - p], np.diag(npath[S - p + 1 :, : p - 1]))
-            )
+            b_sp1_init = np.diag(bpath[S - p + 1:, :p - 1])
+            n_s_init = np.hstack((n_ss[S - p],
+                                  np.diag(npath[S - p + 1:, :p - 1])))
             bn_init = np.hstack((b_sp1_init, n_s_init))
-            bn_args = (
-                rpath[:p],
-                wpath[:p],
-                bvec1[-p],
-                p,
-                beta,
-                sigma,
-                l_tilde,
-                chi_n_vec[-p:],
-                b_ellip,
-                upsilon,
-                diff,
-            )
-            results_bn = opt.root(
-                hh.bn_errors, bn_init, args=(bn_args), tol=In_Tol
-            )
-            bvec = results_bn.x[: p - 1]
-            nvec = results_bn.x[p - 1 :]
+            bn_args = (rpath[:p], wpath[:p], bvec1[-p], p, beta, sigma,
+                       l_tilde, chi_n_vec[-p:], b_ellip, upsilon, diff)
+            results_bn = opt.root(hh.bn_errors, bn_init, args=(bn_args),
+                                  tol=In_Tol)
+            bvec = results_bn.x[:p - 1]
+            nvec = results_bn.x[p - 1:]
             b_s_vec = np.append(bvec1[-p], bvec)
             b_sp1_vec = np.append(bvec, 0.0)
-            cvec = hh.get_cons(rpath[:p], wpath[:p], b_s_vec, b_sp1_vec, nvec)
-            npath[S - p :, :p] = DiagMaskn * nvec + npath[S - p :, :p]
-            bpath[S - p + 1 :, 1:p] = (
-                DiagMaskb * bvec + bpath[S - p + 1 :, 1:p]
-            )
-            cpath[S - p :, :p] = DiagMaskn * cvec + cpath[S - p :, :p]
-            n_args = (
-                wpath[:p],
-                sigma,
-                l_tilde,
-                chi_n_vec[-p:],
-                b_ellip,
-                upsilon,
-                diff,
-                cvec,
-            )
+            cvec = hh.get_cons(rpath[:p], wpath[:p], b_s_vec, b_sp1_vec,
+                               nvec)
+            npath[S - p:, :p] = DiagMaskn * nvec + npath[S - p:, :p]
+            bpath[S - p + 1:, 1:p] = (DiagMaskb * bvec +
+                                      bpath[S - p + 1:, 1:p])
+            cpath[S - p:, :p] = DiagMaskn * cvec + cpath[S - p:, :p]
+            n_args = (wpath[:p], sigma, l_tilde, chi_n_vec[-p:],
+                      b_ellip, upsilon, diff, cvec)
             n_errors = hh.get_n_errors(nvec, *n_args)
-            n_err_path[S - p :, :p] = (
-                DiagMaskn * n_errors + n_err_path[S - p :, :p]
-            )
+            n_err_path[S - p:, :p] = (DiagMaskn * n_errors +
+                                      n_err_path[S - p:, :p])
             b_errors = hh.get_b_errors(cvec, rpath[1:p], *b_err_args)
-            b_err_path[S - p + 1 :, 1:p] = (
-                DiagMaskb * b_errors + b_err_path[S - p + 1 :, 1:p]
-            )
+            b_err_path[S - p + 1:, 1:p] = (DiagMaskb * b_errors +
+                                           b_err_path[S - p + 1:, 1:p])
 
     # Solve the complete remaining lifetime decisions of agents born
     # between period t=1 and t=T2
     for t in range(T2):
         DiagMaskb = np.eye(S - 1, dtype=bool)
         DiagMaskn = np.eye(S, dtype=bool)
-        b_sp1_init = np.diag(bpath[1:, t : t + S - 1])
+        b_sp1_init = np.diag(bpath[1:, t:t + S - 1])
         if t == 0:
-            n_s_init = np.hstack((n_ss[0], np.diag(npath[1:, t : t + S - 1])))
+            n_s_init = np.hstack((n_ss[0],
+                                  np.diag(npath[1:, t:t + S - 1])))
         else:
-            n_s_init = np.diag(npath[:, t - 1 : t + S - 1])
+            n_s_init = np.diag(npath[:, t - 1:t + S - 1])
         bn_init = np.hstack((b_sp1_init, n_s_init))
-        bn_args = (
-            rpath[t : t + S],
-            wpath[t : t + S],
-            0.0,
-            S,
-            beta,
-            sigma,
-            l_tilde,
-            chi_n_vec,
-            b_ellip,
-            upsilon,
-            diff,
-        )
-        results_bn = opt.root(
-            hh.bn_errors, bn_init, args=(bn_args), tol=In_Tol
-        )
-        bvec = results_bn.x[: S - 1]
-        nvec = results_bn.x[S - 1 :]
+        bn_args = (rpath[t:t + S], wpath[t:t + S], 0.0, S, beta, sigma,
+                   l_tilde, chi_n_vec, b_ellip, upsilon, diff)
+        results_bn = opt.root(hh.bn_errors, bn_init, args=(bn_args),
+                              tol=In_Tol)
+        bvec = results_bn.x[:S - 1]
+        nvec = results_bn.x[S - 1:]
         b_s_vec = np.append(0.0, bvec)
         b_sp1_vec = np.append(bvec, 0.0)
-        cvec = hh.get_cons(
-            rpath[t : t + S], wpath[t : t + S], b_s_vec, b_sp1_vec, nvec
-        )
-        npath[:, t : t + S] = DiagMaskn * nvec + npath[:, t : t + S]
-        bpath[1:, t + 1 : t + S] = DiagMaskb * bvec + bpath[1:, t + 1 : t + S]
-        cpath[:, t : t + S] = DiagMaskn * cvec + cpath[:, t : t + S]
-        n_args = (
-            wpath[t : t + S],
-            sigma,
-            l_tilde,
-            chi_n_vec,
-            b_ellip,
-            upsilon,
-            diff,
-            cvec,
-        )
+        cvec = hh.get_cons(rpath[t:t + S], wpath[t:t + S], b_s_vec,
+                           b_sp1_vec, nvec)
+        npath[:, t:t + S] = DiagMaskn * nvec + npath[:, t:t + S]
+        bpath[1:, t + 1:t + S] = (DiagMaskb * bvec +
+                                  bpath[1:, t + 1:t + S])
+        cpath[:, t:t + S] = DiagMaskn * cvec + cpath[:, t:t + S]
+        n_args = (wpath[t:t + S], sigma, l_tilde, chi_n_vec, b_ellip,
+                  upsilon, diff, cvec)
         n_errors = hh.get_n_errors(nvec, *n_args)
-        n_err_path[:, t : t + S] = (
-            DiagMaskn * n_errors + n_err_path[:, t : t + S]
-        )
-        b_errors = hh.get_b_errors(cvec, rpath[t + 1 : t + S], *b_err_args)
-        b_err_path[1:, t + 1 : t + S] = (
-            DiagMaskb * b_errors + b_err_path[1:, t + 1 : t + S]
-        )
+        n_err_path[:, t:t + S] = (DiagMaskn * n_errors +
+                                  n_err_path[:, t:t + S])
+        b_errors = hh.get_b_errors(cvec, rpath[t + 1:t + S], *b_err_args)
+        b_err_path[1:, t + 1:t + S] = (DiagMaskb * b_errors +
+                                       b_err_path[1:, t + 1:t + S])
 
     return cpath, npath, bpath, n_err_path, b_err_path
 
 
 def get_TPI(bvec1, args, graphs):
-    """
+    '''
     --------------------------------------------------------------------
     Solves for transition path equilibrium using time path iteration
     (TPI)
@@ -452,65 +383,30 @@ def get_TPI(bvec1, args, graphs):
 
     RETURNS: tpi_output
     --------------------------------------------------------------------
-    """
+    '''
     start_time = time.clock()
-    (
-        S,
-        T1,
-        T2,
-        beta,
-        sigma,
-        l_tilde,
-        b_ellip,
-        upsilon,
-        chi_n_vec,
-        A,
-        alpha,
-        delta,
-        r_ss,
-        K_ss,
-        L_ss,
-        C_ss,
-        b_ss,
-        n_ss,
-        maxiter,
-        Out_Tol,
-        In_Tol,
-        EulDiff,
-        xi,
-    ) = args
+    (S, T1, T2, beta, sigma, l_tilde, b_ellip, upsilon, chi_n_vec, A,
+        alpha, delta, r_ss, K_ss, L_ss, C_ss, b_ss, n_ss, maxiter,
+        Out_Tol, In_Tol, EulDiff, xi) = args
     K1, K1_cnstr = aggr.get_K(bvec1)
 
     # Create time path for r
     rpath_init = np.zeros(T2 + S - 1)
-    rpath_init[:T1] = get_path(r_ss, r_ss, T1, "quadratic")
+    rpath_init[:T1] = get_path(r_ss, r_ss, T1, 'quadratic')
     rpath_init[T1:] = r_ss
 
     iter_TPI = int(0)
     dist = 10.0
     rw_params = (A, alpha, delta)
     Y_params = (A, alpha)
-    cnb_args = (
-        S,
-        T2,
-        beta,
-        sigma,
-        l_tilde,
-        b_ellip,
-        upsilon,
-        chi_n_vec,
-        bvec1,
-        n_ss,
-        In_Tol,
-        EulDiff,
-    )
+    cnb_args = (S, T2, beta, sigma, l_tilde, b_ellip, upsilon,
+                chi_n_vec, bvec1, n_ss, In_Tol, EulDiff)
     while (iter_TPI < maxiter) and (dist >= Out_Tol):
         iter_TPI += 1
         rpath = rpath_init
         wpath = firms.get_w(rpath_init, rw_params)
-        cpath, npath, bpath, n_err_path, b_err_path = inner_loop(
-            rpath, wpath, cnb_args
-        )
+        cpath, npath, bpath, n_err_path, b_err_path = \
+            inner_loop(rpath, wpath, cnb_args)
         Kpath_new = np.zeros(T2 + S - 1)
         Kpath_new[:T2], Kpath_cstr = aggr.get_K(bpath[:, :T2])
         Kpath_new[T2:] = K_ss
@@ -525,68 +421,44 @@ def get_TPI(bvec1, args, graphs):
         Cpath = np.zeros(T2 + S - 1)
         Cpath[:T2] = aggr.get_C(cpath[:, :T2])
         Cpath[T2:] = C_ss
-        RCerrPath = (
-            Ypath[:-1]
-            - Cpath[:-1]
-            - Kpath_new[1:]
-            + (1 - delta) * Kpath_new[:-1]
-        )
+        RCerrPath = (Ypath[:-1] - Cpath[:-1] - Kpath_new[1:] +
+                     (1 - delta) * Kpath_new[:-1])
         # Check the distance of rpath_new
         dist = (np.absolute(rpath_new[:T2] - rpath_init[:T2])).sum()
         print(
-            "TPI iter: ",
-            iter_TPI,
-            ", dist: ",
-            "%10.4e" % (dist),
-            ", max abs all errs: ",
-            "%10.4e"
-            % (
-                np.absolute(
-                    np.hstack((b_err_path.max(axis=0), n_err_path.max(axis=0)))
-                ).max()
-            ),
-        )
+            'TPI iter: ', iter_TPI, ', dist: ', "%10.4e" % (dist),
+            ', max abs all errs: ', "%10.4e" %
+            (np.absolute(np.hstack((b_err_path.max(axis=0),
+             n_err_path.max(axis=0)))).max()))
         # The resource constraint does not bind across the transition
         # path until the equilibrium is solved
-        rpath_init[:T2] = xi * rpath_new[:T2] + (1 - xi) * rpath_init[:T2]
+        rpath_init[:T2] = (xi * rpath_new[:T2] +
+                           (1 - xi) * rpath_init[:T2])
     if (iter_TPI == maxiter) and (dist > Out_Tol):
-        print("TPI reached maxiter and did not converge.")
+        print('TPI reached maxiter and did not converge.')
     elif (iter_TPI == maxiter) and (dist <= Out_Tol):
-        print(
-            "TPI converged in the last iteration. "
-            + "Should probably increase maxiter_TPI."
-        )
+        print('TPI converged in the last iteration. ' +
+              'Should probably increase maxiter_TPI.')
     Kpath = Kpath_new
     Lpath = Lpath_new
 
     tpi_time = time.clock() - start_time
 
     tpi_output = {
-        "cpath": cpath,
-        "npath": npath,
-        "bpath": bpath,
-        "wpath": wpath,
-        "rpath": rpath,
-        "Kpath": Kpath,
-        "Lpath": Lpath,
-        "Ypath": Ypath,
-        "Cpath": Cpath,
-        "n_err_path": n_err_path,
-        "b_err_path": b_err_path,
-        "RCerrPath": RCerrPath,
-        "tpi_time": tpi_time,
-    }
+        'cpath': cpath, 'npath': npath, 'bpath': bpath, 'wpath': wpath,
+        'rpath': rpath, 'Kpath': Kpath, 'Lpath': Lpath, 'Ypath': Ypath,
+        'Cpath': Cpath, 'n_err_path': n_err_path,
+        'b_err_path': b_err_path, 'RCerrPath': RCerrPath,
+        'tpi_time': tpi_time}
 
     # Print maximum resource constraint error. Only look at resource
     # constraint up to period T2 - 1 because period T2 includes K_{t+1},
     # which was forced to be the steady-state
-    print(
-        "Max abs. RC error: ",
-        "%10.4e" % (np.absolute(RCerrPath[: T2 - 1]).max()),
-    )
+    print('Max abs. RC error: ', "%10.4e" %
+          (np.absolute(RCerrPath[:T2 - 1]).max()))
 
     # Print TPI computation time
-    utils.print_time(tpi_time, "TPI")
+    utils.print_time(tpi_time, 'TPI')
 
     if graphs:
         graph_args = (S, T2)
@@ -596,7 +468,7 @@ def get_TPI(bvec1, args, graphs):
 
 
 def create_graphs(tpi_output, args):
-    """
+    '''
     --------------------------------------------------------------------
     Plot equilibrium time path results
     --------------------------------------------------------------------
@@ -651,21 +523,21 @@ def create_graphs(tpi_output, args):
 
     RETURNS: None
     --------------------------------------------------------------------
-    """
+    '''
     S, T2 = args
-    Kpath = tpi_output["Kpath"]
-    Lpath = tpi_output["Lpath"]
-    rpath = tpi_output["rpath"]
-    wpath = tpi_output["wpath"]
-    Ypath = tpi_output["Ypath"]
-    Cpath = tpi_output["Cpath"]
-    cpath = tpi_output["cpath"]
-    npath = tpi_output["npath"]
-    bpath = tpi_output["bpath"]
+    Kpath = tpi_output['Kpath']
+    Lpath = tpi_output['Lpath']
+    rpath = tpi_output['rpath']
+    wpath = tpi_output['wpath']
+    Ypath = tpi_output['Ypath']
+    Cpath = tpi_output['Cpath']
+    cpath = tpi_output['cpath']
+    npath = tpi_output['npath']
+    bpath = tpi_output['bpath']
 
     # Create directory if images directory does not already exist
     cur_path = os.path.split(os.path.abspath(__file__))[0]
-    output_fldr = "images"
+    output_fldr = 'images'
     output_dir = os.path.join(cur_path, output_fldr)
     if not os.access(output_dir, os.F_OK):
         os.makedirs(output_dir)
@@ -674,84 +546,84 @@ def create_graphs(tpi_output, args):
     tvec = np.linspace(1, T2 + S - 1, T2 + S - 1)
     minorLocator = MultipleLocator(1)
     fig, ax = plt.subplots()
-    plt.plot(tvec, Kpath, marker="D")
+    plt.plot(tvec, Kpath, marker='D')
     # for the minor ticks, use no labels; default NullFormatter
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
-    plt.title("Time path for aggregate capital stock K")
-    plt.xlabel(r"Period $t$")
-    plt.ylabel(r"Aggregate capital $K_{t}$")
-    output_path = os.path.join(output_dir, "Kpath")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
+    plt.title('Time path for aggregate capital stock K')
+    plt.xlabel(r'Period $t$')
+    plt.ylabel(r'Aggregate capital $K_{t}$')
+    output_path = os.path.join(output_dir, 'Kpath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
 
     # Plot time path of aggregate capital stock
     fig, ax = plt.subplots()
-    plt.plot(tvec, Lpath, marker="D")
+    plt.plot(tvec, Lpath, marker='D')
     # for the minor ticks, use no labels; default NullFormatter
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
-    plt.title("Time path for aggregate labor L")
-    plt.xlabel(r"Period $t$")
-    plt.ylabel(r"Aggregate labor $L_{t}$")
-    output_path = os.path.join(output_dir, "Lpath")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
+    plt.title('Time path for aggregate labor L')
+    plt.xlabel(r'Period $t$')
+    plt.ylabel(r'Aggregate labor $L_{t}$')
+    output_path = os.path.join(output_dir, 'Lpath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
 
     # Plot time path of aggregate output (GDP)
     fig, ax = plt.subplots()
-    plt.plot(tvec, Ypath, marker="D")
+    plt.plot(tvec, Ypath, marker='D')
     # for the minor ticks, use no labels; default NullFormatter
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
-    plt.title("Time path for aggregate output (GDP) Y")
-    plt.xlabel(r"Period $t$")
-    plt.ylabel(r"Aggregate output $Y_{t}$")
-    output_path = os.path.join(output_dir, "Ypath")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
+    plt.title('Time path for aggregate output (GDP) Y')
+    plt.xlabel(r'Period $t$')
+    plt.ylabel(r'Aggregate output $Y_{t}$')
+    output_path = os.path.join(output_dir, 'Ypath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
 
     # Plot time path of aggregate consumption
     fig, ax = plt.subplots()
-    plt.plot(tvec, Cpath, marker="D")
+    plt.plot(tvec, Cpath, marker='D')
     # for the minor ticks, use no labels; default NullFormatter
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
-    plt.title("Time path for aggregate consumption C")
-    plt.xlabel(r"Period $t$")
-    plt.ylabel(r"Aggregate consumption $C_{t}$")
-    output_path = os.path.join(output_dir, "C_aggr_path")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
+    plt.title('Time path for aggregate consumption C')
+    plt.xlabel(r'Period $t$')
+    plt.ylabel(r'Aggregate consumption $C_{t}$')
+    output_path = os.path.join(output_dir, 'C_aggr_path')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
 
     # Plot time path of real wage
     fig, ax = plt.subplots()
-    plt.plot(tvec, wpath, marker="D")
+    plt.plot(tvec, wpath, marker='D')
     # for the minor ticks, use no labels; default NullFormatter
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
-    plt.title("Time path for real wage w")
-    plt.xlabel(r"Period $t$")
-    plt.ylabel(r"Real wage $w_{t}$")
-    output_path = os.path.join(output_dir, "wpath")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
+    plt.title('Time path for real wage w')
+    plt.xlabel(r'Period $t$')
+    plt.ylabel(r'Real wage $w_{t}$')
+    output_path = os.path.join(output_dir, 'wpath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
 
     # Plot time path of real interest rate
     fig, ax = plt.subplots()
-    plt.plot(tvec, rpath, marker="D")
+    plt.plot(tvec, rpath, marker='D')
     # for the minor ticks, use no labels; default NullFormatter
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
-    plt.title("Time path for real interest rate r")
-    plt.xlabel(r"Period $t$")
-    plt.ylabel(r"Real interest rate $r_{t}$")
-    output_path = os.path.join(output_dir, "rpath")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
+    plt.title('Time path for real interest rate r')
+    plt.xlabel(r'Period $t$')
+    plt.ylabel(r'Real interest rate $r_{t}$')
+    output_path = os.path.join(output_dir, 'rpath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
@@ -760,43 +632,31 @@ def create_graphs(tpi_output, args):
     tgridT = np.linspace(1, T2, T2)
     sgrid = np.linspace(1, S, S)
     tmat, smat = np.meshgrid(tgridT, sgrid)
-    cmap_c = cm.get_cmap("summer")
+    cmap_c = cm.get_cmap('summer')
     fig = plt.figure()
-    ax = fig.gca(projection="3d")
-    ax.set_xlabel(r"period-$t$")
-    ax.set_ylabel(r"age-$s$")
-    ax.set_zlabel(r"individual consumption $c_{s,t}$")
+    ax = fig.gca(projection='3d')
+    ax.set_xlabel(r'period-$t$')
+    ax.set_ylabel(r'age-$s$')
+    ax.set_zlabel(r'individual consumption $c_{s,t}$')
     strideval = max(int(1), int(round(S / 10)))
-    ax.plot_surface(
-        tmat,
-        smat,
-        cpath[:, :T2],
-        rstride=strideval,
-        cstride=strideval,
-        cmap=cmap_c,
-    )
-    output_path = os.path.join(output_dir, "cpath")
+    ax.plot_surface(tmat, smat, cpath[:, :T2], rstride=strideval,
+                    cstride=strideval, cmap=cmap_c)
+    output_path = os.path.join(output_dir, 'cpath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
 
     # Plot time path of individual labor supply distribution
-    cmap_n = cm.get_cmap("summer")
+    cmap_n = cm.get_cmap('summer')
     fig = plt.figure()
-    ax = fig.gca(projection="3d")
-    ax.set_xlabel(r"period-$t$")
-    ax.set_ylabel(r"age-$s$")
-    ax.set_zlabel(r"individual labor supply $n_{s,t}$")
+    ax = fig.gca(projection='3d')
+    ax.set_xlabel(r'period-$t$')
+    ax.set_ylabel(r'age-$s$')
+    ax.set_zlabel(r'individual labor supply $n_{s,t}$')
     strideval = max(int(1), int(round(S / 10)))
-    ax.plot_surface(
-        tmat,
-        smat,
-        npath[:, :T2],
-        rstride=strideval,
-        cstride=strideval,
-        cmap=cmap_n,
-    )
-    output_path = os.path.join(output_dir, "npath")
+    ax.plot_surface(tmat, smat, npath[:, :T2], rstride=strideval,
+                    cstride=strideval, cmap=cmap_n)
+    output_path = os.path.join(output_dir, 'npath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
@@ -805,22 +665,16 @@ def create_graphs(tpi_output, args):
     bpath_full = np.vstack((bpath, np.zeros((1, bpath.shape[1]))))
     sgrid_b = np.linspace(1, S + 1, S + 1)
     tmat_b, smat_b = np.meshgrid(tgridT, sgrid_b)
-    cmap_b = cm.get_cmap("summer")
+    cmap_b = cm.get_cmap('summer')
     fig = plt.figure()
-    ax = fig.gca(projection="3d")
-    ax.set_xlabel(r"period-$t$")
-    ax.set_ylabel(r"age-$s$")
-    ax.set_zlabel(r"individual savings $b_{s,t}$")
+    ax = fig.gca(projection='3d')
+    ax.set_xlabel(r'period-$t$')
+    ax.set_ylabel(r'age-$s$')
+    ax.set_zlabel(r'individual savings $b_{s,t}$')
     strideval = max(int(1), int(round(S / 10)))
-    ax.plot_surface(
-        tmat_b,
-        smat_b,
-        bpath_full[:, :T2],
-        rstride=strideval,
-        cstride=strideval,
-        cmap=cmap_b,
-    )
-    output_path = os.path.join(output_dir, "bpath")
+    ax.plot_surface(tmat_b, smat_b, bpath_full[:, :T2],
+                    rstride=strideval, cstride=strideval, cmap=cmap_b)
+    output_path = os.path.join(output_dir, 'bpath')
     plt.savefig(output_path)
     # plt.show()
     plt.close()

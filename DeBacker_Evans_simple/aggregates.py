@@ -1,4 +1,4 @@
-"""
+'''
 ------------------------------------------------------------------------
 This module contains the functions that generate aggregate variables in
 the steady-state or in the transition path of the overlapping
@@ -13,20 +13,19 @@ This Python module defines the following function(s):
     get_Y()
     get_C()
 ------------------------------------------------------------------------
-"""
-
+'''
 # Import packages
 import numpy as np
 
-"""
+'''
 ------------------------------------------------------------------------
     Functions
 ------------------------------------------------------------------------
-"""
+'''
 
 
 def get_L(narr):
-    """
+    '''
     --------------------------------------------------------------------
     Solve for steady-state aggregate labor L or time path of aggregate
     labor L_t
@@ -64,7 +63,7 @@ def get_L(narr):
 
     RETURNS: L, L_cstr
     --------------------------------------------------------------------
-    """
+    '''
     epsilon = 0.1
     a = epsilon / np.exp(1)
     b = 1 / epsilon
@@ -72,27 +71,23 @@ def get_L(narr):
         L = narr.sum()
         L_cstr = L < epsilon
         if L_cstr:
-            print(
-                "get_L() warning: distribution of labor supply "
-                + "and/or parameters created L < epsilon"
-            )
+            print('get_L() warning: distribution of labor supply ' +
+                  'and/or parameters created L < epsilon')
             # Force L > 0 by stitching a * exp(b * L) for L < eps
             L = a * np.exp(b * L)
     elif narr.ndim == 2:  # This is the time path case
         L = narr.sum(axis=0)
         L_cstr = L < epsilon
         if L.min() < epsilon:
-            print(
-                "Aggregate labor constraint is violated "
-                + "(L_t < epsilon) for some period in time path."
-            )
+            print('Aggregate labor constraint is violated ' +
+                  '(L_t < epsilon) for some period in time path.')
             L[L_cstr] = a * np.exp(b * L[L_cstr])
 
     return L, L_cstr
 
 
 def get_K(barr):
-    """
+    '''
     --------------------------------------------------------------------
     Solve for steady-state aggregate capital stock K or time path of
     aggregate capital stock K_t.
@@ -131,7 +126,7 @@ def get_K(barr):
 
     RETURNS: K, K_cstr
     --------------------------------------------------------------------
-    """
+    '''
     epsilon = 0.1
     a = epsilon / np.exp(1)
     b = 1 / epsilon
@@ -139,10 +134,8 @@ def get_K(barr):
         K = barr.sum()
         K_cstr = K < epsilon
         if K_cstr:
-            print(
-                "get_K() warning: distribution of savings and/or "
-                + "parameters created K < epsilon"
-            )
+            print('get_K() warning: distribution of savings and/or ' +
+                  'parameters created K < epsilon')
             # Force K > 0 by stitching a * exp(b * K) for K < eps
             K = a * np.exp(b * K)
 
@@ -150,17 +143,15 @@ def get_K(barr):
         K = barr.sum(axis=0)
         K_cstr = K < epsilon
         if K.min() < epsilon:
-            print(
-                "Aggregate capital constraint is violated "
-                + "(K_t < epsilon) for some period in time path."
-            )
+            print('Aggregate capital constraint is violated ' +
+                  '(K_t < epsilon) for some period in time path.')
             K[K_cstr] = a * np.exp(b * K[K_cstr])
 
     return K, K_cstr
 
 
 def get_Y(K, L, params):
-    """
+    '''
     --------------------------------------------------------------------
     Solve for steady-state aggregate output Y or time path of aggregate
     output Y_t
@@ -185,15 +176,15 @@ def get_Y(K, L, params):
 
     RETURNS: Y
     --------------------------------------------------------------------
-    """
+    '''
     A, alpha = params
-    Y = A * (K**alpha) * (L ** (1 - alpha))
+    Y = A * (K ** alpha) * (L ** (1 - alpha))
 
     return Y
 
 
 def get_C(carr):
-    """
+    '''
     --------------------------------------------------------------------
     Solve for steady-state aggregate consumption C or time path of
     aggregate consumption C_t
@@ -211,7 +202,7 @@ def get_C(carr):
 
     Returns: C
     --------------------------------------------------------------------
-    """
+    '''
     if carr.ndim == 1:
         C = carr.sum()
     elif carr.ndim == 2:

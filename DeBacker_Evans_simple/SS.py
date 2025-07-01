@@ -1,4 +1,4 @@
-"""
+'''
 ------------------------------------------------------------------------
 This module contains the functions used to solve the steady state of
 the model with S-period lived agents and endogenous labor supply from
@@ -15,8 +15,7 @@ This Python module defines the following function(s):
     get_SS()
     create_graphs()
 ------------------------------------------------------------------------
-"""
-
+'''
 # Import packages
 import time
 import numpy as np
@@ -29,15 +28,15 @@ import firms
 import aggregates as aggr
 import utilities as utils
 
-"""
+'''
 ------------------------------------------------------------------------
     Functions
 ------------------------------------------------------------------------
-"""
+'''
 
 
 def euler_sys(guesses, *args):
-    """
+    '''
     --------------------------------------------------------------------
     Specify the system of Euler Equations characterizing the household
     problem.
@@ -80,27 +79,17 @@ def euler_sys(guesses, *args):
 
     RETURNS: array of n_errors and b_errors
     --------------------------------------------------------------------
-    """
-    (
-        r,
-        w,
-        beta,
-        sigma,
-        l_tilde,
-        chi_n_vec,
-        b_ellip,
-        upsilon,
-        diff,
-        S,
-        SS_tol,
-    ) = args
+    '''
+    (r, w, beta, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff, S,
+     SS_tol) = args
     nvec = guesses[:S]
     bvec1 = guesses[S:]
 
     bvec = np.append(0.0, bvec1)
     b_sp1 = np.append(bvec[1:], 0.0)
     cvec = hh.get_cons(r, w, bvec, b_sp1, nvec)
-    n_args = (w, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff, cvec)
+    n_args = (w, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff,
+              cvec)
     n_errors = hh.get_n_errors(nvec, *n_args)
     b_args = (r, beta, sigma, diff)
     b_errors = hh.get_b_errors(cvec, *b_args)
@@ -111,7 +100,7 @@ def euler_sys(guesses, *args):
 
 
 def inner_loop(r, w, args):
-    """
+    '''
     --------------------------------------------------------------------
     Given values for r and w, solve for the households' optimal decisions
     --------------------------------------------------------------------
@@ -169,41 +158,15 @@ def inner_loop(r, w, args):
     RETURNS: K, L, cvec, nvec, bvec, b_Sp1, r_new, w_new, n_errors,
              b_errors
     --------------------------------------------------------------------
-    """
-    (
-        nvec_init,
-        bvec_init,
-        S,
-        beta,
-        sigma,
-        l_tilde,
-        b_ellip,
-        upsilon,
-        chi_n_vec,
-        A,
-        alpha,
-        delta,
-        EulDiff,
-        SS_tol,
-    ) = args
+    '''
+    (nvec_init, bvec_init, S, beta, sigma, l_tilde, b_ellip, upsilon,
+     chi_n_vec, A, alpha, delta, EulDiff, SS_tol) = args
 
-    euler_args = (
-        r,
-        w,
-        beta,
-        sigma,
-        l_tilde,
-        chi_n_vec,
-        b_ellip,
-        upsilon,
-        EulDiff,
-        S,
-        SS_tol,
-    )
+    euler_args = (r, w, beta, sigma, l_tilde, chi_n_vec, b_ellip,
+                  upsilon, EulDiff, S, SS_tol)
     guesses = np.append(nvec_init, bvec_init[1:])
-    results_euler = opt.root(
-        euler_sys, guesses, args=(euler_args), method="lm", tol=SS_tol
-    )
+    results_euler = opt.root(euler_sys, guesses, args=(euler_args),
+                             method='lm', tol=SS_tol)
     nvec = results_euler.x[:S]
     bvec = np.append(0.0, results_euler.x[S:])
     n_errors = results_euler.fun[:S]
@@ -218,11 +181,12 @@ def inner_loop(r, w, args):
     w_params = (A, alpha, delta)
     w_new = firms.get_w(r_new, w_params)
 
-    return (K, L, cvec, nvec, bvec, b_Sp1, r_new, w_new, n_errors, b_errors)
+    return (K, L, cvec, nvec, bvec, b_Sp1, r_new, w_new, n_errors,
+            b_errors)
 
 
 def get_SS(init_vals, args, graphs=False):
-    """
+    '''
     --------------------------------------------------------------------
     Solve for the steady-state solution of the S-period-lived agent OG
     model with endogenous labor supply using the bisection method in K
@@ -320,26 +284,11 @@ def get_SS(init_vals, args, graphs=False):
 
     RETURNS: ss_output
     --------------------------------------------------------------------
-    """
+    '''
     start_time = time.clock()
     r_init, c1_init = init_vals
-    (
-        S,
-        beta,
-        sigma,
-        l_tilde,
-        b_ellip,
-        upsilon,
-        chi_n_vec,
-        A,
-        alpha,
-        delta,
-        Bsct_Tol,
-        Eul_Tol,
-        EulDiff,
-        xi,
-        maxiter,
-    ) = args
+    (S, beta, sigma, l_tilde, b_ellip, upsilon, chi_n_vec, A, alpha,
+     delta, Bsct_Tol, Eul_Tol, EulDiff, xi, maxiter) = args
     iter_SS = 0
     dist = 10
     nvec_init = np.ones(S) * 0.4
@@ -348,45 +297,17 @@ def get_SS(init_vals, args, graphs=False):
     while (iter_SS < maxiter) and (dist >= Bsct_Tol):
         iter_SS += 1
         w_init = firms.get_w(r_init, rw_params)
-        inner_args = (
-            nvec_init,
-            bvec_init,
-            S,
-            beta,
-            sigma,
-            l_tilde,
-            b_ellip,
-            upsilon,
-            chi_n_vec,
-            A,
-            alpha,
-            delta,
-            EulDiff,
-            Eul_Tol,
-        )
-        (
-            K_new,
-            L_new,
-            cvec,
-            nvec,
-            bvec,
-            b_Sp1,
-            r_new,
-            w_new,
-            n_errors,
-            b_errors,
-        ) = inner_loop(r_init, w_init, inner_args)
+        inner_args = (nvec_init, bvec_init, S, beta, sigma, l_tilde,
+                      b_ellip, upsilon, chi_n_vec, A, alpha, delta,
+                      EulDiff, Eul_Tol)
+        (K_new, L_new, cvec, nvec, bvec, b_Sp1, r_new, w_new, n_errors,
+            b_errors) = inner_loop(r_init, w_init, inner_args)
         all_errors = np.hstack((n_errors, b_errors, b_Sp1))
         dist = (np.absolute(r_new - r_init)).sum()
         r_init = xi * r_new + (1 - xi) * r_init
-        print(
-            "SS Iter=",
-            iter_SS,
-            ", SS Dist=",
-            "%10.4e" % (dist),
-            ", Max Abs Err=",
-            "%10.4e" % (np.absolute(all_errors).max()),
-        )
+        print('SS Iter=', iter_SS, ', SS Dist=', '%10.4e' % (dist),
+              ', Max Abs Err=', '%10.4e' %
+              (np.absolute(all_errors).max()))
 
     c_ss = cvec
     n_ss = nvec
@@ -406,35 +327,23 @@ def get_SS(init_vals, args, graphs=False):
     ss_time = time.clock() - start_time
 
     ss_output = {
-        "c_ss": c_ss,
-        "n_ss": n_ss,
-        "b_ss": b_ss,
-        "b_Sp1_ss": b_Sp1_ss,
-        "w_ss": w_ss,
-        "r_ss": r_ss,
-        "K_ss": K_ss,
-        "L_ss": L_ss,
-        "Y_ss": Y_ss,
-        "C_ss": C_ss,
-        "n_err_ss": n_err_ss,
-        "b_err_ss": b_err_ss,
-        "RCerr_ss": RCerr_ss,
-        "ss_time": ss_time,
-    }
-    print("n_ss is: ", n_ss)
-    print("b_ss is: ", b_ss)
-    print("K_ss=", K_ss, ", L_ss=", L_ss)
-    print("r_ss=", r_ss, ", w_ss=", w_ss)
-    print(
-        "Maximum abs. labor supply Euler error is: ",
-        np.absolute(n_err_ss).max(),
-    )
-    print("Maximum abs. savings Euler error is: ", np.absolute(b_err_ss).max())
-    print("Resource constraint error is: ", RCerr_ss)
-    print("Steady-state residual savings b_Sp1 is: ", b_Sp1_ss)
+        'c_ss': c_ss, 'n_ss': n_ss, 'b_ss': b_ss, 'b_Sp1_ss': b_Sp1_ss,
+        'w_ss': w_ss, 'r_ss': r_ss, 'K_ss': K_ss, 'L_ss': L_ss,
+        'Y_ss': Y_ss, 'C_ss': C_ss, 'n_err_ss': n_err_ss,
+        'b_err_ss': b_err_ss, 'RCerr_ss': RCerr_ss, 'ss_time': ss_time}
+    print('n_ss is: ', n_ss)
+    print('b_ss is: ', b_ss)
+    print('K_ss=', K_ss, ', L_ss=', L_ss)
+    print('r_ss=', r_ss, ', w_ss=', w_ss)
+    print('Maximum abs. labor supply Euler error is: ',
+          np.absolute(n_err_ss).max())
+    print('Maximum abs. savings Euler error is: ',
+          np.absolute(b_err_ss).max())
+    print('Resource constraint error is: ', RCerr_ss)
+    print('Steady-state residual savings b_Sp1 is: ', b_Sp1_ss)
 
     # Print SS computation time
-    utils.print_time(ss_time, "SS")
+    utils.print_time(ss_time, 'SS')
 
     if graphs:
         create_graphs(c_ss, b_ss, n_ss)
@@ -443,7 +352,7 @@ def get_SS(init_vals, args, graphs=False):
 
 
 def create_graphs(c_ss, b_ss, n_ss):
-    """
+    '''
     --------------------------------------------------------------------
     Plot steady-state equilibrium results
     --------------------------------------------------------------------
@@ -473,10 +382,10 @@ def create_graphs(c_ss, b_ss, n_ss):
 
     RETURNS: None
     --------------------------------------------------------------------
-    """
+    '''
     # Create directory if images directory does not already exist
     cur_path = os.path.split(os.path.abspath(__file__))[0]
-    output_fldr = "images"
+    output_fldr = 'images'
     output_dir = os.path.join(cur_path, output_fldr)
     if not os.access(output_dir, os.F_OK):
         os.makedirs(output_dir)
@@ -487,37 +396,37 @@ def create_graphs(c_ss, b_ss, n_ss):
     age_pers_c = np.arange(1, S + 1)
     age_pers_b = np.arange(1, S + 2)
     fig, ax = plt.subplots()
-    plt.plot(age_pers_c, c_ss, marker="D", label="Consumption")
-    plt.plot(age_pers_b, b_ss_full, marker="D", label="Savings")
+    plt.plot(age_pers_c, c_ss, marker='D', label='Consumption')
+    plt.plot(age_pers_b, b_ss_full, marker='D', label='Savings')
     # for the minor ticks, use no labels; default NullFormatter
     minorLocator = MultipleLocator(1)
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
     # plt.title('Steady-state consumption and savings', fontsize=20)
-    plt.xlabel(r"Age $s$")
-    plt.ylabel(r"Units of consumption")
+    plt.xlabel(r'Age $s$')
+    plt.ylabel(r'Units of consumption')
     plt.xlim((0, S + 1))
     # plt.ylim((-1.0, 1.15 * (b_ss.max())))
-    plt.legend(loc="upper left")
-    output_path = os.path.join(output_dir, "SS_bc")
+    plt.legend(loc='upper left')
+    output_path = os.path.join(output_dir, 'SS_bc')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
 
     # Plot steady-state labor supply distributions
     fig, ax = plt.subplots()
-    plt.plot(age_pers_c, n_ss, marker="D", label="Labor supply")
+    plt.plot(age_pers_c, n_ss, marker='D', label='Labor supply')
     # for the minor ticks, use no labels; default NullFormatter
     minorLocator = MultipleLocator(1)
     ax.xaxis.set_minor_locator(minorLocator)
-    plt.grid(b=True, which="major", color="0.65", linestyle="-")
+    plt.grid(b=True, which='major', color='0.65', linestyle='-')
     # plt.title('Steady-state labor supply', fontsize=20)
-    plt.xlabel(r"Age $s$")
-    plt.ylabel(r"Labor supply")
+    plt.xlabel(r'Age $s$')
+    plt.ylabel(r'Labor supply')
     plt.xlim((0, S + 1))
     # plt.ylim((-0.1, 1.15 * (n_ss.max())))
-    plt.legend(loc="upper right")
-    output_path = os.path.join(output_dir, "SS_n")
+    plt.legend(loc='upper right')
+    output_path = os.path.join(output_dir, 'SS_n')
     plt.savefig(output_path)
     # plt.show()
     plt.close()
