@@ -1,4 +1,4 @@
-#%%
+# %%
 import numpy as np
 import scipy.optimize as opt
 import pytest
@@ -27,7 +27,6 @@ def test_marg_ut_cons(c, sigma, expected):
     test_value = household.marg_ut_cons(c, sigma)
 
     assert np.allclose(test_value, expected)
-
 
 
 # %%
@@ -90,7 +89,7 @@ def test_marg_ut_labor(n, params, expected):
     assert np.allclose(test_value, expected)
 
 
-#%%
+# %%
 
 # Test cases for inv_mu_c are the reverse of the test cases for
 # marg_ut_cons from test_household.py
@@ -118,8 +117,7 @@ def test_inv_mu_c(value, sigma, expected):
     assert np.allclose(test_value, expected)
 
 
-
-#%%
+# %%
 # Setup for marg_ut_beq tests
 p1 = Specifications()
 p1.chi_b = np.array([1.5, 2.5, 5.0])
@@ -268,7 +266,8 @@ def test_get_bq(BQ, j, p, method, expected):
     print("Test value = ", test_value)
     assert np.allclose(test_value, expected)
 
-#%%
+
+# %%
 
 p1 = Specifications()
 p1.eta = np.tile(
@@ -327,6 +326,7 @@ def test_get_tr(TR, j, p, method, expected):
 
 # %%
 
+
 def setup_c_from_n_params():
     p = Specifications()
     p.S, p.J, p.T = 5, 2, 10
@@ -345,9 +345,16 @@ def setup_c_from_n_params():
     mtrx_params = np.zeros((p.T, p.S, 12))
     mtrx_params[:, :, 10] = 0.25
     return {
-        "p": p, "etr_params": etr_params, "mtrx_params": mtrx_params,
-        "n": 0.4, "b": 10.0, "p_tilde": 1.0, "r": 0.05, "w": 1.2,
-        "factor": 1.0, "z": 1.0,
+        "p": p,
+        "etr_params": etr_params,
+        "mtrx_params": mtrx_params,
+        "n": 0.4,
+        "b": 10.0,
+        "p_tilde": 1.0,
+        "r": 0.05,
+        "w": 1.2,
+        "factor": 1.0,
+        "z": 1.0,
     }
 
 
@@ -361,8 +368,17 @@ def get_ss_vector_expected_c(params):
     tax_noncompliance = p.labor_income_tax_noncompliance_rate[-1, j]
     mtrx_params_ss = params["mtrx_params"][-1, :, :]
     mtr_labor = tax.MTR_income(
-        r, w, b, n, params["factor"], False, e * z, None, mtrx_params_ss,
-        tax_noncompliance, p
+        r,
+        w,
+        b,
+        n,
+        params["factor"],
+        False,
+        e * z,
+        None,
+        mtrx_params_ss,
+        tax_noncompliance,
+        p,
     )
     deriv = 1 - tau_payroll - mtr_labor
     mdu_labor = household.marg_ut_labor(n, chi_n, p)
@@ -401,11 +417,24 @@ def test_c_from_n_vec(method, n, b, r, w, chi_n, mtrx_p, expected_c):
 
     # For SS, e is calculated internally. For TPI, pass None to trigger internal calc.
     test_c = household.c_from_n(
-        n, b, p_tilde, r, w, factor, e=None, z=z, chi_n=chi_n,
-        etr_params=PARAMS["etr_params"], mtrx_params=mtrx_p,
-        t=None, j=0, p=p, method=method,
+        n,
+        b,
+        p_tilde,
+        r,
+        w,
+        factor,
+        e=None,
+        z=z,
+        chi_n=chi_n,
+        etr_params=PARAMS["etr_params"],
+        mtrx_params=mtrx_p,
+        t=None,
+        j=0,
+        p=p,
+        method=method,
     )
     assert np.allclose(test_c, expected_c)
+
 
 # %%
 # Setup for testing b_from_c_EOL
@@ -464,7 +493,20 @@ p_get_cons.g_y = 0.02
 # Test data format: (r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, p, expected_cons)
 test_data_get_cons = [
     # Case 1: Scalar inputs
-    (0.04, 1.5, 1.0, 10.0, 11.0, 0.8, 0.5, 2.0, 1.0, 1.2, p_get_cons, -0.88221474),
+    (
+        0.04,
+        1.5,
+        1.0,
+        10.0,
+        11.0,
+        0.8,
+        0.5,
+        2.0,
+        1.0,
+        1.2,
+        p_get_cons,
+        -0.88221474,
+    ),
     # Case 2: Vector inputs
     (
         np.array([0.04, 0.05]),  # r
@@ -488,7 +530,9 @@ test_data_get_cons = [
     test_data_get_cons,
     ids=["Scalar inputs", "Vector inputs"],
 )
-def test_get_cons(r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, p, expected_cons):
+def test_get_cons(
+    r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, p, expected_cons
+):
     """
     Test of the household_stoch.get_cons function.
     """
@@ -520,7 +564,9 @@ def test_ci():
 
     assert np.allclose(test_ci, expected_ci)
 
+
 # %%
+
 
 def setup_c_from_b_splus1_params(taxes=False):
     """
@@ -535,10 +581,8 @@ def setup_c_from_b_splus1_params(taxes=False):
     p.z_grid = np.array([0.8, 1.2])
     p.Z = np.array([[0.9, 0.1], [0.1, 0.9]])
     p.chi_b = np.array([2.0])
-    p.e = np.tile(
-        np.linspace(1.0, 1.2, p.S).reshape(1, p.S, 1), (p.T, 1, 1)
-    )
-    p.retire = p.S + 1 # Everyone works
+    p.e = np.tile(np.linspace(1.0, 1.2, p.S).reshape(1, p.S, 1), (p.T, 1, 1))
+    p.retire = p.S + 1  # Everyone works
 
     # Tax parameters
     p.capital_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
@@ -564,31 +608,47 @@ def setup_c_from_b_splus1_params(taxes=False):
     w_splus1 = 1.5
     p_tilde_splus1 = 1.0
     p_tilde_s = 1.0
-    b_splus1 = np.array([5.0, 10.0]) # nb=2
+    b_splus1 = np.array([5.0, 10.0])  # nb=2
     # Next period's policy functions (nb x nz)
     n_splus1_policy = np.array([[0.3, 0.4], [0.3, 0.4]])
     c_splus1_policy = np.array([[2.0, 2.5], [8.0, 9.0]])
     factor = 1.0
-    rho_s = 0.1 # mortality rate at age s
+    rho_s = 0.1  # mortality rate at age s
 
     # Manually calculate expected consumption
     beta = p.beta[j]
     bequest_utility = rho_s * household.marg_ut_beq(b_splus1, p.sigma, j, p)
-    
+
     # Calculate expectation of marginal utility
-    consumption_utility_matrix = np.zeros((b_splus1.shape[0], p.z_grid.shape[0]))
+    consumption_utility_matrix = np.zeros(
+        (b_splus1.shape[0], p.z_grid.shape[0])
+    )
     for zp_index, zp in enumerate(p.z_grid):
         mtr_capital = tax.MTR_income(
-            r_splus1, w_splus1, b_splus1, n_splus1_policy[:, zp_index], factor, True,
-            p.e[t, s + 1, j] * zp, etr_params[t, s + 1, :], mtry_params[t, s + 1, :],
-            p.capital_income_tax_noncompliance_rate[t, j], p
+            r_splus1,
+            w_splus1,
+            b_splus1,
+            n_splus1_policy[:, zp_index],
+            factor,
+            True,
+            p.e[t, s + 1, j] * zp,
+            etr_params[t, s + 1, :],
+            mtry_params[t, s + 1, :],
+            p.capital_income_tax_noncompliance_rate[t, j],
+            p,
         )
-        mtr_wealth = tax.MTR_wealth(b_splus1, p.h_wealth[t+1], p.m_wealth[t+1], p.p_wealth[t+1])
+        mtr_wealth = tax.MTR_wealth(
+            b_splus1, p.h_wealth[t + 1], p.m_wealth[t + 1], p.p_wealth[t + 1]
+        )
         deriv = (1 + r_splus1) - (r_splus1 * mtr_capital) - mtr_wealth
-        
-        mu_c_splus1 = household.marg_ut_cons(c_splus1_policy[:, zp_index], p.sigma)
-        consumption_utility_matrix[:, zp_index] = deriv * mu_c_splus1 / p_tilde_splus1
-    
+
+        mu_c_splus1 = household.marg_ut_cons(
+            c_splus1_policy[:, zp_index], p.sigma
+        )
+        consumption_utility_matrix[:, zp_index] = (
+            deriv * mu_c_splus1 / p_tilde_splus1
+        )
+
     prob_z_splus1 = p.Z[z_index, :]
     E_MU_c = consumption_utility_matrix @ prob_z_splus1
 
@@ -599,31 +659,43 @@ def setup_c_from_b_splus1_params(taxes=False):
 
     # Gather args for function call
     args = (
-        r_splus1, w_splus1, p_tilde_splus1, p_tilde_s, b_splus1,
-        n_splus1_policy, c_splus1_policy, factor, rho_s,
-        etr_params[t+1, s + 1, :], mtry_params[t+1, s + 1, :], j, t+1,
-        p.e[t, s + 1, j], z_index, p, "TPI"
+        r_splus1,
+        w_splus1,
+        p_tilde_splus1,
+        p_tilde_s,
+        b_splus1,
+        n_splus1_policy,
+        c_splus1_policy,
+        factor,
+        rho_s,
+        etr_params[t + 1, s + 1, :],
+        mtry_params[t + 1, s + 1, :],
+        j,
+        t + 1,
+        p.e[t, s + 1, j],
+        z_index,
+        p,
+        "TPI",
     )
 
     return args, expected_c
 
+
 @pytest.mark.parametrize(
     "setup_params",
-    [
-        {"taxes": False},
-        {"taxes": True}
-    ],
-    ids=["No Taxes", "With Capital/Wealth Taxes"]
+    [{"taxes": False}, {"taxes": True}],
+    ids=["No Taxes", "With Capital/Wealth Taxes"],
 )
 def test_c_from_b_splus1(setup_params):
     """
     Test of the household_stoch.c_from_b_splus1 function.
     """
     args, expected_c = setup_c_from_b_splus1_params(**setup_params)
-    
+
     test_c = household.c_from_b_splus1(*args)
-    
+
     assert np.allclose(test_c, expected_c)
+
 
 # %% Tests for FOC_labor and get_y
 
@@ -679,7 +751,9 @@ p_foc.e = np.array([1.0, 0.9, 1.4]).reshape(3, 1)
 # Make e 3D for TPI cases if needed, but for SS it's okay
 p_foc.e = np.tile(p_foc.e.reshape(1, p_foc.S, p_foc.J), (p_foc.T, 1, 1))
 
-p_foc.labor_income_tax_noncompliance_rate = np.zeros((p_foc.T + p_foc.S, p_foc.J))
+p_foc.labor_income_tax_noncompliance_rate = np.zeros(
+    (p_foc.T + p_foc.S, p_foc.J)
+)
 p_foc.tau_payroll = np.array([0.15])
 # Set up simple tax functions
 etr_params = np.zeros((p_foc.S, 12))
@@ -711,14 +785,44 @@ z_vector = np.array([0.9, 1.0, 1.2])
 # To correctly test, we need a consistent consumption value
 e_ss = np.squeeze(p_foc.e[-1, :, j])
 net_tax_scalar_z = tax.net_taxes(
-    r, w, b, n, bq, factor, tr, ubi, theta, t, j, False, method, e_ss * z_scalar, etr_params, p_foc
+    r,
+    w,
+    b,
+    n,
+    bq,
+    factor,
+    tr,
+    ubi,
+    theta,
+    t,
+    j,
+    False,
+    method,
+    e_ss * z_scalar,
+    etr_params,
+    p_foc,
 )
 c_scalar_z = household.get_cons(
     r, w, p_tilde, b, b_splus1, n, bq, net_tax_scalar_z, e_ss, z_scalar, p_foc
 )
 
 net_tax_vector_z = tax.net_taxes(
-    r, w, b, n, bq, factor, tr, ubi, theta, t, j, False, method, e_ss * z_vector, etr_params, p_foc
+    r,
+    w,
+    b,
+    n,
+    bq,
+    factor,
+    tr,
+    ubi,
+    theta,
+    t,
+    j,
+    False,
+    method,
+    e_ss * z_vector,
+    etr_params,
+    p_foc,
 )
 c_vector_z = household.get_cons(
     r, w, p_tilde, b, b_splus1, n, bq, net_tax_vector_z, e_ss, z_vector, p_foc
@@ -726,21 +830,45 @@ c_vector_z = household.get_cons(
 
 # Manually calculate FOC error for the scalar case
 mtrx_s = tax.MTR_income(
-    r, w, b, n, factor, False, e_ss * z_scalar, etr_params, mtrx_params, 0.0, p_foc
+    r,
+    w,
+    b,
+    n,
+    factor,
+    False,
+    e_ss * z_scalar,
+    etr_params,
+    mtrx_params,
+    0.0,
+    p_foc,
 )
 deriv_s = 1 - p_foc.tau_payroll[-1] - mtrx_s
 mu_c_s = household.marg_ut_cons(c_scalar_z, p_foc.sigma)
 mdu_n_s = household.marg_ut_labor(n, np.squeeze(p_foc.chi_n), p_foc)
-expected_ss_scalar_z = mu_c_s * (1 / p_tilde) * w * deriv_s * e_ss * z_scalar - mdu_n_s
+expected_ss_scalar_z = (
+    mu_c_s * (1 / p_tilde) * w * deriv_s * e_ss * z_scalar - mdu_n_s
+)
 
 # Manually calculate FOC error for the vector case
 mtrx_v = tax.MTR_income(
-    r, w, b, n, factor, False, e_ss * z_vector, etr_params, mtrx_params, 0.0, p_foc
+    r,
+    w,
+    b,
+    n,
+    factor,
+    False,
+    e_ss * z_vector,
+    etr_params,
+    mtrx_params,
+    0.0,
+    p_foc,
 )
 deriv_v = 1 - p_foc.tau_payroll[-1] - mtrx_v
 mu_c_v = household.marg_ut_cons(c_vector_z, p_foc.sigma)
 mdu_n_v = household.marg_ut_labor(n, np.squeeze(p_foc.chi_n), p_foc)
-expected_ss_vector_z = mu_c_v * (1 / p_tilde) * w * deriv_v * e_ss * z_vector - mdu_n_v
+expected_ss_vector_z = (
+    mu_c_v * (1 / p_tilde) * w * deriv_v * e_ss * z_vector - mdu_n_v
+)
 
 
 @pytest.mark.parametrize(
@@ -776,6 +904,7 @@ def test_FOC_labor_stoch(c, z, e, expected):
 
     assert np.allclose(test_error, expected)
 
+
 # %%
 
 bssmat0 = np.array([[0.1, 0.2], [0.3, 0.4]])
@@ -806,6 +935,7 @@ def test_constraint_checker_TPI(bssmat, nssmat, cssmat, ltilde):
     household.constraint_checker_TPI(bssmat, nssmat, cssmat, 10, ltilde)
     assert True
 
+
 # %% Test for BC_residual
 
 # Setup parameters and variables for a series of test cases
@@ -821,15 +951,35 @@ bq1, net_tax1, e1, z1 = 0.5, 2.0, 1.0, 1.2
 resources1 = (1 + r1) * b1 + w1 * e1 * z1 * n1 + bq1 - net_tax1
 c1_zero_resid = (resources1 - b_splus1_1 * savings_detrend_factor) / p_tilde1
 args1 = (
-    c1_zero_resid, n1, b1, b_splus1_1, r1, w1, p_tilde1, e1, z1, bq1,
-    net_tax1, p_bc
+    c1_zero_resid,
+    n1,
+    b1,
+    b_splus1_1,
+    r1,
+    w1,
+    p_tilde1,
+    e1,
+    z1,
+    bq1,
+    net_tax1,
+    p_bc,
 )
 
 # Test Case 2: Scalar inputs, positive residual (underspending)
 c2_pos_resid = c1_zero_resid - 1.0  # Consume less than budget allows
 args2 = (
-    c2_pos_resid, n1, b1, b_splus1_1, r1, w1, p_tilde1, e1, z1, bq1,
-    net_tax1, p_bc
+    c2_pos_resid,
+    n1,
+    b1,
+    b_splus1_1,
+    r1,
+    w1,
+    p_tilde1,
+    e1,
+    z1,
+    bq1,
+    net_tax1,
+    p_bc,
 )
 # The residual should be the unspent amount: p_tilde * 1.0
 expected2 = p_tilde1 * 1.0
@@ -845,15 +995,37 @@ e3, z3 = np.array([1.0, 1.1]), np.array([1.2, 0.9])
 resources3 = (1 + r3) * b3 + w3 * e3 * z3 * n3 + bq3 - net_tax3
 c3_zero_resid = (resources3 - b_splus1_3 * savings_detrend_factor) / p_tilde3
 args3 = (
-    c3_zero_resid, n3, b3, b_splus1_3, r3, w3, p_tilde3, e3, z3, bq3,
-    net_tax3, p_bc
+    c3_zero_resid,
+    n3,
+    b3,
+    b_splus1_3,
+    r3,
+    w3,
+    p_tilde3,
+    e3,
+    z3,
+    bq3,
+    net_tax3,
+    p_bc,
 )
 
 # Test Case 4: Vector inputs, non-zero residual (overspending)
-c4_neg_resid = c3_zero_resid + np.array([0.5, 2.0])  # Consume more than budget allows
+c4_neg_resid = c3_zero_resid + np.array(
+    [0.5, 2.0]
+)  # Consume more than budget allows
 args4 = (
-    c4_neg_resid, n3, b3, b_splus1_3, r3, w3, p_tilde3, e3, z3, bq3,
-    net_tax3, p_bc
+    c4_neg_resid,
+    n3,
+    b3,
+    b_splus1_3,
+    r3,
+    w3,
+    p_tilde3,
+    e3,
+    z3,
+    bq3,
+    net_tax3,
+    p_bc,
 )
 # The residual should be the negative of the overspent amount
 expected4 = -p_tilde3 * np.array([0.5, 2.0])
@@ -881,6 +1053,7 @@ def test_BC_residual(args, expected_residual):
     test_residual = household.BC_residual(*args)
     assert np.allclose(test_residual, expected_residual)
 
+
 # %% Test for EOL_system
 
 
@@ -900,8 +1073,8 @@ def setup_EOL_system_params(vector=False):
     p.J = 1
     p.S = 3
     p.T = 3
-    # p.retire = p.S 
-    p.retire = np.array([p.S]) #Changed to array
+    # p.retire = p.S
+    p.retire = np.array([p.S])  # Changed to array
     # Use s-specific chi_n and 3D e, as EOL is age-specific
     p.chi_n = np.array([0.8, 0.85, 0.9]).reshape(3, 1)
     p.e = np.array([1.0, 1.1, 1.2]).reshape(3, 1)
@@ -950,8 +1123,21 @@ def setup_EOL_system_params(vector=False):
     # Manually calculate the expected residual by replicating EOL_system logic
     # 1. Consumption from labor FOC
     c = household.c_from_n(
-        n, b, p_tilde, r, w, factor, e_s, z, chi_n_s, etr_params_s,
-        mtrx_params_s, t=t, j=j, p=p, method=method
+        n,
+        b,
+        p_tilde,
+        r,
+        w,
+        factor,
+        e_s,
+        z,
+        chi_n_s,
+        etr_params_s,
+        mtrx_params_s,
+        t=t,
+        j=j,
+        p=p,
+        method=method,
     )
 
     # 2. Bequests from consumption
@@ -959,8 +1145,22 @@ def setup_EOL_system_params(vector=False):
 
     # 3. Net taxes
     net_tax = tax.net_taxes(
-        r, w, b, n, bq, factor, tr, ubi, theta, t, j, False,
-        method, e_s * z, etr_params_s, p
+        r,
+        w,
+        b,
+        n,
+        bq,
+        factor,
+        tr,
+        ubi,
+        theta,
+        t,
+        j,
+        False,
+        method,
+        e_s * z,
+        etr_params_s,
+        p,
     )
 
     # 4. Budget constraint residual
@@ -970,8 +1170,25 @@ def setup_EOL_system_params(vector=False):
 
     # Gather args for the function call to EOL_system
     args = (
-        n, b, p_tilde, r, w, tr, ubi, bq, theta, factor, e_s, z,
-        chi_n_s, etr_params_s, mtrx_params_s, t, j, p, method
+        n,
+        b,
+        p_tilde,
+        r,
+        w,
+        tr,
+        ubi,
+        bq,
+        theta,
+        factor,
+        e_s,
+        z,
+        chi_n_s,
+        etr_params_s,
+        mtrx_params_s,
+        t,
+        j,
+        p,
+        method,
     )
 
     return args, expected_residual
@@ -990,7 +1207,9 @@ def test_EOL_system(vector_case):
 
     assert np.allclose(test_residual, expected_residual)
 
+
 # %% Test for HH_system
+
 
 def setup_HH_system_params(scalar_case=True):
     """
@@ -1029,7 +1248,7 @@ def setup_HH_system_params(scalar_case=True):
         c = 7.5
         b_splus1 = 8.2
         z = 1.1
-    else: # vector case for x, c, b_splus1, and z
+    else:  # vector case for x, c, b_splus1, and z
         x = np.array([np.array([8.0, 9.0]), np.array([0.7, 0.6])])
         c = np.array([7.5, 8.5])
         b_splus1 = np.array([8.2, 9.3])
@@ -1040,27 +1259,73 @@ def setup_HH_system_params(scalar_case=True):
     # need n as array for pension calculations
     n = np.atleast_1d(n)
 
-    # Manually calculate expected residuals 
+    # Manually calculate expected residuals
     net_tax = tax.net_taxes(
-        r, w, b, n, bq, factor, tr, ubi, theta, t, j, False,
-        method, e_s * z, etr_params_s, p
+        r,
+        w,
+        b,
+        n,
+        bq,
+        factor,
+        tr,
+        ubi,
+        theta,
+        t,
+        j,
+        False,
+        method,
+        e_s * z,
+        etr_params_s,
+        p,
     )
     BC_error = household.BC_residual(
         c, n, b, b_splus1, r, w, p_tilde, e_s, z, bq, net_tax, p
     )
     FOC_error = household.FOC_labor(
-        r, w, p_tilde, b, c, n, factor, e_s, z, chi_n_s, etr_params_s,
-        mtrx_params_s, t, j, p, method
+        r,
+        w,
+        p_tilde,
+        b,
+        c,
+        n,
+        factor,
+        e_s,
+        z,
+        chi_n_s,
+        etr_params_s,
+        mtrx_params_s,
+        t,
+        j,
+        p,
+        method,
     )
 
     expected_HH_error = np.array([BC_error, FOC_error])
 
     # Gather args for the function call
     args = (
-        x, c, b_splus1, r, w, p_tilde, factor, tr, ubi, bq, theta, e_s, z,
-        chi_n_s, etr_params_s, mtrx_params_s, j, t, p, method
+        x,
+        c,
+        b_splus1,
+        r,
+        w,
+        p_tilde,
+        factor,
+        tr,
+        ubi,
+        bq,
+        theta,
+        e_s,
+        z,
+        chi_n_s,
+        etr_params_s,
+        mtrx_params_s,
+        j,
+        t,
+        p,
+        method,
     )
-    
+
     # THE FIX: Squeeze the expected error for the scalar case to match the
     # shape of the function's output. The vector case is returned as is.
     if scalar_case:
@@ -1084,22 +1349,60 @@ def test_HH_system(scalar_case):
     # For the vector case, we cannot pass a 2D array, so we must loop.
     if not scalar_case:
         # Unpack args and test each element of the vector case individually
-        (x, c, b_splus1, r, w, p_tilde, factor, tr, ubi, bq, theta, e_s, z,
-        chi_n_s, etr_params_s, mtrx_params_s, j, t, p, method) = args
+        (
+            x,
+            c,
+            b_splus1,
+            r,
+            w,
+            p_tilde,
+            factor,
+            tr,
+            ubi,
+            bq,
+            theta,
+            e_s,
+            z,
+            chi_n_s,
+            etr_params_s,
+            mtrx_params_s,
+            j,
+            t,
+            p,
+            method,
+        ) = args
 
         for i in range(len(x[0])):
             x_i = np.array([x[0][i], x[1][i]])
             args_i = (
-                x_i, c[i], b_splus1[i], r, w, p_tilde, factor, tr, ubi,
-                bq, theta, e_s, z[i], chi_n_s, etr_params_s,
-                mtrx_params_s, j, t, p, method
+                x_i,
+                c[i],
+                b_splus1[i],
+                r,
+                w,
+                p_tilde,
+                factor,
+                tr,
+                ubi,
+                bq,
+                theta,
+                e_s,
+                z[i],
+                chi_n_s,
+                etr_params_s,
+                mtrx_params_s,
+                j,
+                t,
+                p,
+                method,
             )
             test_error_i = household.HH_system(*args_i)
             expected_error_i = expected_error[:, i]
             assert np.allclose(test_error_i, expected_error_i)
-    else: # Scalar case
+    else:  # Scalar case
         test_error = household.HH_system(*args)
         assert np.allclose(test_error, expected_error)
+
 
 # %% Test for solve_HH
 
@@ -1118,22 +1421,26 @@ p_solve_hh.chi_b = np.array([2.0])
 p_solve_hh.ltilde = 1.0
 p_solve_hh.b_ellipse = 5.0
 p_solve_hh.upsilon = 2.0
-p_solve_hh.retire = np.array([p_solve_hh.S + 1]) # need as array?
+p_solve_hh.retire = np.array([p_solve_hh.S + 1])  # need as array?
 
 # Set 3D and 2D arrays for parameters as expected by functions
 p_solve_hh.e = np.tile(
     np.linspace(1.0, 1.2, p_solve_hh.S).reshape(1, p_solve_hh.S, 1),
-    (p_solve_hh.T, 1, 1)
+    (p_solve_hh.T, 1, 1),
 )
 p_solve_hh.chi_n = np.tile(
     np.array([0.5, 0.6, 0.7, 0.8]).reshape(1, p_solve_hh.S, 1),
-    (p_solve_hh.T, 1, 1)
+    (p_solve_hh.T, 1, 1),
 )
 p_solve_hh.rho = np.array([0.1, 0.1, 0.1, 1.0])  # Age-specific mortality rates
 
 # Tax parameters
-p_solve_hh.labor_income_tax_noncompliance_rate = np.zeros((p_solve_hh.T, p_solve_hh.J))
-p_solve_hh.capital_income_tax_noncompliance_rate = np.zeros((p_solve_hh.T, p_solve_hh.J))
+p_solve_hh.labor_income_tax_noncompliance_rate = np.zeros(
+    (p_solve_hh.T, p_solve_hh.J)
+)
+p_solve_hh.capital_income_tax_noncompliance_rate = np.zeros(
+    (p_solve_hh.T, p_solve_hh.J)
+)
 etr_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
 mtrx_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
 mtry_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
@@ -1174,12 +1481,26 @@ ss_mtry_params = mtry_params_hh[-1, :, :]
 # This dictionary holds all arguments for the call to solve_HH
 # This is not a fixture, just a dictionary for organizing args
 solve_hh_args = {
-    "r": ss_r, "w": ss_w, "p_tilde": ss_p_tilde, "factor": factor_hh,
-    "tr": ss_tr, "bq": ss_bq, "ubi": ubi_hh, "b_grid": b_grid_hh,
-    "sigma": p_solve_hh.sigma, "theta": theta_hh, "chi_n": ss_chi_n,
-    "rho": p_solve_hh.rho, "e": ss_e, "etr_params": ss_etr_params,
-    "mtrx_params": ss_mtrx_params, "mtry_params": ss_mtry_params,
-    "j": j_hh, "t": ss_t, "p": p_solve_hh, "method": "SS"
+    "r": ss_r,
+    "w": ss_w,
+    "p_tilde": ss_p_tilde,
+    "factor": factor_hh,
+    "tr": ss_tr,
+    "bq": ss_bq,
+    "ubi": ubi_hh,
+    "b_grid": b_grid_hh,
+    "sigma": p_solve_hh.sigma,
+    "theta": theta_hh,
+    "chi_n": ss_chi_n,
+    "rho": p_solve_hh.rho,
+    "e": ss_e,
+    "etr_params": ss_etr_params,
+    "mtrx_params": ss_mtrx_params,
+    "mtry_params": ss_mtry_params,
+    "j": j_hh,
+    "t": ss_t,
+    "p": p_solve_hh,
+    "method": "SS",
 }
 
 
@@ -1235,25 +1556,60 @@ def test_solve_HH():
 
     # Check the budget constraint for this point
     net_tax = tax.net_taxes(
-        args["r"][s_test], args["w"][s_test], b_s, np.atleast_1d(n_s), args["bq"][s_test],
-        args["factor"], args["tr"][s_test], args["ubi"], args["theta"],
-        args["t"][s_test], args["j"], False, "SS", args["e"][s_test] * z_s,
-        args["etr_params"][s_test, :], args["p"]
+        args["r"][s_test],
+        args["w"][s_test],
+        b_s,
+        np.atleast_1d(n_s),
+        args["bq"][s_test],
+        args["factor"],
+        args["tr"][s_test],
+        args["ubi"],
+        args["theta"],
+        args["t"][s_test],
+        args["j"],
+        False,
+        "SS",
+        args["e"][s_test] * z_s,
+        args["etr_params"][s_test, :],
+        args["p"],
     )
     bc_resid = household.BC_residual(
-        c_s, n_s, b_s, b_splus1, args["r"][s_test], args["w"][s_test],
-        args["p_tilde"][s_test], args["e"][s_test], z_s, args["bq"][s_test],
-        net_tax, p
+        c_s,
+        n_s,
+        b_s,
+        b_splus1,
+        args["r"][s_test],
+        args["w"][s_test],
+        args["p_tilde"][s_test],
+        args["e"][s_test],
+        z_s,
+        args["bq"][s_test],
+        net_tax,
+        p,
     )
 
     # Check the labor FOC for this point
     foc_lab_resid = household.FOC_labor(
-        args["r"][s_test], args["w"][s_test], args["p_tilde"][s_test],
-        b_s, c_s, n_s, args["factor"], args["e"][s_test], z_s,
-        args["chi_n"][s_test], args["etr_params"][s_test, :],
-        args["mtrx_params"][s_test, :], args["t"][s_test], args["j"], p, "SS"
+        args["r"][s_test],
+        args["w"][s_test],
+        args["p_tilde"][s_test],
+        b_s,
+        c_s,
+        n_s,
+        args["factor"],
+        args["e"][s_test],
+        z_s,
+        args["chi_n"][s_test],
+        args["etr_params"][s_test, :],
+        args["mtrx_params"][s_test, :],
+        args["t"][s_test],
+        args["j"],
+        p,
+        "SS",
     )
 
     # The residuals should be very close to zero
     assert np.isclose(bc_resid, 0, atol=1e-5)
-    assert np.isclose(foc_lab_resid, 0, atol=1e-4) # persistent error - can't get it lower?
+    assert np.isclose(
+        foc_lab_resid, 0, atol=1e-4
+    )  # persistent error - can't get it lower?
