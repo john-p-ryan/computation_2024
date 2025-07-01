@@ -334,6 +334,100 @@ def c_from_n(
     Returns:
         c (array_like): consumption implied by labor choice
     """
+    # simplified logic for tax rates
+    if method == "SS":
+        tau_payroll = p.tau_payroll[-1]
+        tax_noncompliance = p.labor_income_tax_noncompliance_rate[-1, j]
+        if e is None:
+            e = np.squeeze(p.e[-1, :, j])
+    elif method == "TPI":
+        # When t is a scalar, we are solving for a particular period
+        tau_payroll = p.tau_payroll[t]
+        tax_noncompliance = p.labor_income_tax_noncompliance_rate[t, j]
+        if e is None:
+            # Simplified for TPI, assuming e is passed correctly for age s
+            # The original logic was overly complex for this function's scope
+            e = p.e[t, :, j]
+    else:  # Fallback for other methods if needed
+        tau_payroll = p.tau_payroll[0]
+        tax_noncompliance = p.labor_income_tax_noncompliance_rate[0, j]
+
+    deriv = (
+        1
+        - tau_payroll
+        - tax.MTR_income(
+            r,
+            w,
+            b,
+            n,
+            factor,
+            False,
+            e * z,
+            etr_params,
+            mtrx_params,
+            tax_noncompliance,
+            p,
+        )
+    )
+    numerator = (
+        p_tilde
+        * np.exp(p.g_y * (1 - p.sigma))
+        * marg_ut_labor(n, chi_n, p)
+    )
+    denominator = w * e * z * deriv
+    c = inv_mu_c(numerator / denominator, p.sigma)
+
+    return c
+
+
+
+'''
+def c_from_n(
+    n,
+    b,
+    p_tilde,
+    r,
+    w,
+    factor,
+    e,
+    z,
+    chi_n,
+    etr_params,
+    mtrx_params,
+    t,
+    j,
+    p,
+    method,
+):
+    r"""
+    Calculate household consumption from labor supply Euler equation for group j.
+
+    .. math::
+        c_{j,s,t} = \left[ \frac{p_t e^{g_y(1-\sigma)}\chi_s^n h'(n_{j,s,t})}{
+        w_t e_{j, s}z_{j, s}(1- \tau^{mtrx}_{s,t})} \right]^{-1/\sigma}
+
+    Args:
+        n (array_like): household labor supply
+        b (array_like): household savings
+        p_tilde (array_like): composite good price
+        r (array_like): the real interest rate
+        w (array_like): the real wage rate
+        factor (scalar): scaling factor converting model units to dollars
+        e (array_like): effective labor units (deterministic)
+        z (array_like): productivity (stochastic)
+        chi_n (array_like): utility weight on the disutility of labor
+        etr_params (list): parameters of the effective tax rate
+            functions
+        mtrx_params (list): parameters of the marginal tax rate
+            on labor income functions
+        t (int): model period
+        j (int): index of ability type
+        p (OG-Core Specifications object): model parameters
+        method (str): adjusts calculation dimensions based on 'SS' or 'TPI'
+
+    Returns:
+        c (array_like): consumption implied by labor choice
+    """
     if method == "SS":
         tau_payroll = p.tau_payroll[-1]
     elif method == "TPI_scalar":  # for 1st donut ring only
@@ -424,6 +518,9 @@ def c_from_n(
     c = inv_mu_c(numerator / denominator, p.sigma)
 
     return c
+'''
+
+
 
 
 def b_from_c_EOL(c, p_tilde, j, sigma, p):
@@ -521,7 +618,122 @@ def get_ci(c_s, p_i, p_tilde, tau_c, alpha_c, method="SS"):
         c_si = alpha_c * (((1 + tau_c) * p_i) / p_tilde) ** (-1) * c_s
     return c_si
 
+def c_from_b_splus1(
+    r_splus1,
+    w_splus1,
+    p_tilde_splus1,
+    p_tilde,
+    b_splus1,
+    n_splus1_policy,
+    c_splus1_policy,
+    factor,
+    rho,
+    etr_params,
+    mtry_params,
+    j,
+    t,
+    e_splus1,
+    z_index,
+    p,
+    method,
+):
+    r"""
+    Calculate household consumption in period s from assets at period s+1 using
+    the savings Euler equation.
 
+    .. math::
+        c_{j,s,t} = (\tilde{p}_t)^{-\frac{1}{\sigma}} e^{g_y}
+        \biggl[\chi^b_j\rho_s(b_{j,s+1,t+1})^{-\sigma} +
+        \beta_j\bigl(1 - \rho_s\bigr)\Bigl(\frac{1 + r_{t+1}
+        \bigl[1 - \tau^{mtry}_{s+1,t+1}\bigr]}{\tilde{p}_{t+1}}\Bigr)
+        \mathbb{E}[(c_{j,s+1,t+1})^{-\sigma}]\biggr]^{-\frac{1}{\sigma}}
+
+    Args:
+        r (array_like): the real interest rate
+        w (array_like): the real wage rate
+        p_tilde (array_like): composite good price
+        b_splus1 (array_like): household savings one period ahead
+        n_splus1_policy (array_like): household labor supply one period ahead across b, z
+        c_splus1_policy (array_like): household consumption one period ahead across b, z
+        factor (scalar): scaling factor converting model units to dollars
+        rho (array_like): mortality rates
+        etr_params (list): parameters of the effective tax rate
+            functions
+        mtry_params (list): parameters of the marginal tax rate
+            on capital income functions
+        j (int): index of ability type
+        t (int): model period
+        e_splus1 (array_like): effective labor units one period ahead
+        z_index (array_like): index in productivity grid
+        p (OG-Core Specifications object): model parameters
+        method (str): adjusts calculation dimensions based on 'SS' or 'TPI'
+
+    returns:
+        c (array_like): household consumption in current period
+    """
+    beta = p.beta[j]
+    # Simplified tax parameter setting
+    if method == "SS":
+        tax_noncompliance = p.capital_income_tax_noncompliance_rate[-1, j]
+        h_wealth = p.h_wealth[-1]
+        m_wealth = p.m_wealth[-1]
+        p_wealth = p.p_wealth[-1]
+    else:  # TPI
+        tax_noncompliance = p.capital_income_tax_noncompliance_rate[t, j]
+        h_wealth = p.h_wealth[t]
+        m_wealth = p.m_wealth[t]
+        p_wealth = p.p_wealth[t]
+
+    bequest_utility = rho * marg_ut_beq(b_splus1, p.sigma, j, p)
+
+    # Calculate the expectation of the discounted marginal utility of consumption
+    # n_splus1_policy must be [nb, nz], so we check dimensions.
+    if n_splus1_policy.ndim < 2:
+        # This case may occur if the next period is the last, handle simply.
+        n_splus1_policy = np.tile(
+            n_splus1_policy.reshape(-1, 1), (1, p.nz)
+        )
+    consumption_utility_matrix = np.zeros(
+        (b_splus1.shape[0], p.z_grid.shape[0])
+    )
+    for zp_index, zp in enumerate(p.z_grid):
+        deriv = (1 + r_splus1) - (
+            r_splus1
+            * tax.MTR_income(
+                r_splus1,
+                w_splus1,
+                b_splus1,
+                n_splus1_policy[:, zp_index],
+                factor,
+                True,
+                e_splus1 * zp,
+                etr_params,
+                mtry_params,
+                tax_noncompliance,
+                p,
+            )
+        ) - tax.MTR_wealth(b_splus1, h_wealth, m_wealth, p_wealth)
+        consumption_utility_matrix[:, zp_index] = (
+            deriv
+            * marg_ut_cons(c_splus1_policy[:, zp_index], p.sigma)
+            / p_tilde_splus1
+        )
+
+    prob_z_splus1 = p.Z[z_index, :]
+    E_MU_c = consumption_utility_matrix @ prob_z_splus1
+
+    # Combine bequest utility and expectation of future consumption utility
+    growth_term = np.exp(p.g_y * (1 - p.sigma))
+    mu_c_rhs = bequest_utility + beta * (1 - rho) * growth_term * E_MU_c
+
+    # Final consumption calculation
+    # c = inv_mu_c((p_tilde ** (p.sigma)) * mu_c_rhs, p.sigma)
+    # is it correct to use p_tilde ** (p.sigma) here?
+    c = inv_mu_c(p_tilde * mu_c_rhs, p.sigma)
+
+    return c
+
+'''
 def c_from_b_splus1(
     r_splus1,
     w_splus1,
@@ -632,7 +844,7 @@ def c_from_b_splus1(
     c = inv_mu_c(p_tilde * mu_c_rhs, p.sigma)
 
     return c
-
+'''
 
 def FOC_labor(
     r,
@@ -999,10 +1211,10 @@ def solve_HH(
     # solve household problem on transition path using endogenous grid method
     nb = len(b_grid)
 
-    if method == "SS":
-        r = np.repeat(r, p.S)
-        w = np.repeat(w, p.S)
-        p_tilde = np.repeat(p_tilde, p.S)
+    #if method == "SS":
+    #    r = np.repeat(r, p.S)
+    #    w = np.repeat(w, p.S)
+    #    p_tilde = np.repeat(p_tilde, p.S)
 
     # initialize policy functions on grid
     b_policy = np.zeros((p.S, nb, p.nz))
@@ -1010,44 +1222,44 @@ def solve_HH(
     n_policy = np.zeros((p.S, nb, p.nz))
 
     # start at the end of life
+    s_EOL = p.S - 1
+    current_t = t[s_EOL] if hasattr(t, "__len__") else t
     for z_index, z in enumerate(p.z_grid):
         for b_index, b in enumerate(b_grid):
             # use root finder to solve problem at end of life
             args = (b,
-                    p_tilde[-1],
-                    r[-1],
-                    w[-1],
-                    tr[-1],
+                    p_tilde[s_EOL],
+                    r[s_EOL],
+                    w[s_EOL],
+                    tr[s_EOL],
                     ubi,
-                    bq[-1],
+                    bq[s_EOL],
                     theta,
                     factor,
-                    e[-1],
+                    e[s_EOL],
                     z,
-                    chi_n[-1],
-                    etr_params[-1, :],
-                    mtrx_params[-1, :],
-                    t[-1] if hasattr(t, '__len__') else t, # Handle scalar t
+                    chi_n[s_EOL],
+                    etr_params[s_EOL, :],
+                    mtrx_params[s_EOL, :],
+                    current_t, # Handle scalar t
                     j,
                     p,
                     method)
-            n = opt.brentq(EOL_system,
-                           0.0,
-                           p.ltilde,
-                           args=args)
+            eps = 1e-8
+            n = opt.brentq(EOL_system, eps, p.ltilde-eps, args=args)
             n_policy[-1, b_index, z_index] = n
             c_policy[-1, b_index, z_index] = c_from_n(n,
                                                       b,
-                                                      p_tilde[-1],
-                                                      r[-1],
-                                                      w[-1],
+                                                      p_tilde[s_EOL],
+                                                      r[s_EOL],
+                                                      w[s_EOL],
                                                       factor,
-                                                      e[-1],
+                                                      e[s_EOL],
                                                       z,
-                                                      chi_n[-1],
-                                                      etr_params,
-                                                      mtrx_params,
-                                                      t + p.S if not hasattr(t, '__len__') else t[-1] + p.S,
+                                                      chi_n[s_EOL],
+                                                      etr_params[s_EOL,:],
+                                                      mtrx_params[s_EOL,:],
+                                                      current_t, # Handle scalar t
                                                       j,
                                                       p,
                                                       method)
@@ -1069,8 +1281,8 @@ def solve_HH(
                                 c_policy[s+1, :, :],
                                 factor,
                                 rho[s],
-                                etr_params,
-                                mtry_params,
+                                etr_params[s+1, :],
+                                mtry_params[s+1, :],
                                 j,
                                 t[s+1] if hasattr(t, '__len__') else t,
                                 e[s+1],
@@ -1079,8 +1291,8 @@ def solve_HH(
                                 method)
             b = np.zeros_like(b_grid)
             n = np.zeros_like(b_grid)
+            current_t = t[s] if hasattr(t, '__len__') else t
             for b_splus1_index, b_splus1 in enumerate(b_grid): # Added enumerate
-
                 args = (c[b_splus1_index],
                     b_splus1,
                     r[s],
@@ -1094,10 +1306,10 @@ def solve_HH(
                     e[s],
                     z,
                     chi_n[s],
-                    etr_params,
-                    mtrx_params,
+                    etr_params[s,:],
+                    mtrx_params[s,:],
                     j,
-                    t[s] if hasattr(t, '__len__') else t,
+                    current_t,
                     p,
                     method)
                 initial_guess = np.array([b_splus1, n_policy[s+1, b_splus1_index, z_index]])
@@ -1105,166 +1317,22 @@ def solve_HH(
                 try:
                     res = opt.root(HH_system, initial_guess, args=args)
                     if res.success:
-                        b[b_splus1_index] = res.x[0]
-                        n[b_splus1_index] = res.x[1]
+                        b[b_splus1_index], n[b_splus1_index] = res.x
                     else: # Handle failure, e.g., by using the guess
-                        b[b_splus1_index] = initial_guess[0]
-                        n[b_splus1_index] = initial_guess[1]
+                        b[b_splus1_index], n[b_splus1_index] = initial_guess
                 except Exception:
-                    b[b_splus1_index] = initial_guess[0]
-                    n[b_splus1_index] = initial_guess[1]
+                    b[b_splus1_index], n[b_splus1_index] = initial_guess
 
-            # Replace NaNs in endogenous grid `b` with a large number for interpolation
-            b_clean = np.nan_to_num(b, nan=b_grid.max()*2)
+            # clean for monotonicity
+            b_clean, unique_idx = np.unique(b, return_index=True)
+            c_interp = c[unique_idx]
+            n_interp = n[unique_idx]
+            b_splus1_interp = b_grid[unique_idx]
             # Extrapolate linearly for points outside the solved endogenous grid
-            c_policy[s, :, z_index] = np.interp(b_grid, b_clean, c, left=c[0], right=c[-1])
-            n_policy[s, :, z_index] = np.interp(b_grid, b_clean, n, left=n[0], right=n[-1])
-            b_policy[s, :, z_index] = np.interp(b_grid, b_clean, b_grid, left=b_grid[0], right=b_grid[-1])
+            c_policy[s, :, z_index] = np.interp(b_grid, b_clean, c_interp, left=c_interp[0], right=c_interp[-1])
+            n_policy[s, :, z_index] = np.interp(b_grid, b_clean, n_interp, left=n_interp[0], right=n_interp[-1])
+            b_policy[s, :, z_index] = np.interp(b_grid, b_clean, b_splus1_interp, left=b_splus1_interp[0], right=b_splus1_interp[-1])
 
 
     return b_policy, c_policy, n_policy
 
-
-
-
-
-'''
-def solve_HH(
-    r,
-    w,
-    p_tilde,
-    factor,
-    tr,
-    bq,
-    ubi,
-    b_grid,
-    sigma,
-    theta,
-    chi_n,
-    rho,
-    e,
-    etr_params,
-    mtrx_params,
-    mtry_params,
-    j,
-    t,
-    p,
-    method,
-):
-    # solve household problem on transition path using endogenous grid method
-    nb = len(b_grid)
-
-
-    if method == "SS":
-        r = np.repeat(r, p.S)
-        w = np.repeat(w, p.S)
-        p_tilde = np.repeat(p_tilde, p.S)
-
-
-    # initialize policy functions on grid
-    b_policy = np.zeros((p.S, nb, p.nz))
-    c_policy = np.zeros((p.S, nb, p.nz))
-    n_policy = np.zeros((p.S, nb, p.nz))
-
-    # start at the end of life 
-    for z_index, z in enumerate(p.z_grid): # need to add z_grid to parameters
-        for b_index, b in enumerate(b_grid):
-
-            # use root finder to solve problem at end of life
-            args = (b, 
-                    p_tilde[-1], 
-                    r[-1], 
-                    w[-1], 
-                    tr[-1], 
-                    ubi, 
-                    bq[-1], 
-                    theta,
-                    factor, 
-                    e[-1], 
-                    z, 
-                    chi_n[-1], 
-                    etr_params, 
-                    mtrx_params, 
-                    t[-1], 
-                    j + p.S, 
-                    p, 
-                    method)
-            n = opt.brentq(EOL_system, 
-                           0.0, 
-                           p.ltilde, 
-                           args=args)
-            n_policy[-1, b_index, z_index] = n
-            c_policy[-1, b_index, z_index] = c_from_n(n, 
-                                                      b, 
-                                                      p_tilde[-1], 
-                                                      r[-1], 
-                                                      w[-1], 
-                                                      factor, 
-                                                      e[-1], 
-                                                      z, 
-                                                      chi_n[-1], 
-                                                      etr_params, 
-                                                      mtrx_params, 
-                                                      t + p.S, 
-                                                      j, 
-                                                      p, 
-                                                      method)
-            b_policy[-1, b_index, z_index] = b_from_c_EOL(c_policy[-1, b_index, z_index], 
-                                                          p_tilde[-1], 
-                                                          j, 
-                                                          p.sigma, 
-                                                          p)
-    
-    # iterate backwards with Euler equation
-    for s in range(p.S-2, -1, -1):
-        for z_index, z in enumerate(p.z_grid):
-            c = c_from_b_splus1(r[s+1], 
-                                w[s+1],
-                                p_tilde[s+1],
-                                p_tilde[s],
-                                b_grid,
-                                n_policy[s+1, :, :],
-                                c_policy[s+1, :, :],
-                                factor,
-                                rho[s],
-                                etr_params,
-                                mtry_params,
-                                j,
-                                t[s+1],
-                                e[s+1],
-                                z_index,
-                                p,
-                                method)
-            b = np.zeros_like(b_grid)
-            n = np.zeros_like(b_grid)
-            for b_splus1_index, b_splus1 in b_grid:
-
-                args = (c[b_splus1_index], 
-                    b_grid, 
-                    r[s], 
-                    w[s], 
-                    p_tilde[s], 
-                    factor, 
-                    tr[s], 
-                    ubi, 
-                    bq[s], 
-                    theta, 
-                    e[s], 
-                    z, 
-                    chi_n[s], 
-                    etr_params, 
-                    mtrx_params, 
-                    j, 
-                    t[s], 
-                    p, 
-                    method)
-                initial_guess = np.array([b_splus1, n_policy[s+1, b_splus1_index, z_index]])
-                x = opt.root(HH_system, initial_guess, args=args)
-                b[b_splus1_index] = x[0]
-                n[b_splus1_index] = x[1]
-            c_policy[s, :, z_index] = np.interp(b_grid, b, c)
-            n_policy[s, :, z_index] = np.interp(b_grid, b, n)
-            b_policy[s, :, z_index] = np.interp(b_grid, b, b_grid)
-
-    return b_policy, c_policy, n_policy
-'''
