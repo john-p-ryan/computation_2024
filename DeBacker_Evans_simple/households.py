@@ -1,4 +1,4 @@
-'''
+"""
 ------------------------------------------------------------------------
 This module contains the functions that generate the variables
 associated with households' optimization in the steady-state or in the
@@ -16,7 +16,8 @@ This Python module defines the following function(s):
     get_cnb_vecs()
     c1_bSp1err()
 ------------------------------------------------------------------------
-'''
+"""
+
 # Import packages
 import numpy as np
 import scipy.optimize as opt
@@ -24,15 +25,15 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
 import os
 
-'''
+"""
 ------------------------------------------------------------------------
     Functions
 ------------------------------------------------------------------------
-'''
+"""
 
 
 def get_cons(r, w, b, b_sp1, n):
-    '''
+    """
     --------------------------------------------------------------------
     Calculate household consumption given prices, labor supply, current
     wealth, and savings
@@ -59,14 +60,14 @@ def get_cons(r, w, b, b_sp1, n):
 
     RETURNS: cons
     --------------------------------------------------------------------
-    '''
+    """
     cons = ((1 + r) * b) + (w * n) - b_sp1
 
     return cons
 
 
 def MU_c_stitch(cvec, sigma, graph=False):
-    '''
+    """
     --------------------------------------------------------------------
     Generate marginal utility(ies) of consumption with CRRA consumption
     utility and stitched function at lower bound such that the new
@@ -108,7 +109,7 @@ def MU_c_stitch(cvec, sigma, graph=False):
 
     RETURNS: MU_c
     --------------------------------------------------------------------
-    '''
+    """
     epsilon = 0.0001
     if np.ndim(cvec) == 0:
         c_s = cvec
@@ -129,7 +130,7 @@ def MU_c_stitch(cvec, sigma, graph=False):
         MU_c[cvec_cnstr] = 2 * b2 * cvec[cvec_cnstr] + b1
 
     if graph:
-        '''
+        """
         ----------------------------------------------------------------
         cur_path    = string, path name of current directory
         output_fldr = string, folder in current path to save files
@@ -144,7 +145,7 @@ def MU_c_stitch(cvec, sigma, graph=False):
         MU_stitch   = (500,) vector, stitched marginal utility of
                       consumption
         ----------------------------------------------------------------
-        '''
+        """
         # Create directory if images directory does not already exist
         cur_path = os.path.split(os.path.abspath(__file__))[0]
         output_fldr = "images"
@@ -158,20 +159,27 @@ def MU_c_stitch(cvec, sigma, graph=False):
         cvec_stitch = np.linspace(-0.00005, epsilon, 500)
         MU_stitch = 2 * b2 * cvec_stitch + b1
         fig, ax = plt.subplots()
-        plt.plot(cvec_CRRA, MU_CRRA, ls='solid', label='$u\'(c)$: CRRA')
-        plt.plot(cvec_stitch, MU_stitch, ls='dashed', color='red',
-                 label='$g\'(c)$: stitched')
+        plt.plot(cvec_CRRA, MU_CRRA, ls="solid", label="$u'(c)$: CRRA")
+        plt.plot(
+            cvec_stitch,
+            MU_stitch,
+            ls="dashed",
+            color="red",
+            label="$g'(c)$: stitched",
+        )
         # for the minor ticks, use no labels; default NullFormatter
         minorLocator = MultipleLocator(1)
         ax.xaxis.set_minor_locator(minorLocator)
-        plt.grid(b=True, which='major', color='0.65', linestyle='-')
-        plt.title('Marginal utility of consumption with stitched ' +
-                  'function', fontsize=14)
-        plt.xlabel(r'Consumption $c$')
-        plt.ylabel(r'Marginal utility $u\'(c)$')
+        plt.grid(b=True, which="major", color="0.65", linestyle="-")
+        plt.title(
+            "Marginal utility of consumption with stitched " + "function",
+            fontsize=14,
+        )
+        plt.xlabel(r"Consumption $c$")
+        plt.ylabel(r"Marginal utility $u\'(c)$")
         plt.xlim((-0.00005, epsilon * 3))
         # plt.ylim((-1.0, 1.15 * (b_ss.max())))
-        plt.legend(loc='upper right')
+        plt.legend(loc="upper right")
         output_path = os.path.join(output_dir, "MU_c_stitched")
         plt.savefig(output_path)
         # plt.show()
@@ -180,7 +188,7 @@ def MU_c_stitch(cvec, sigma, graph=False):
 
 
 def MDU_n_stitch(nvec, params, graph=False):
-    '''
+    """
     --------------------------------------------------------------------
     Generate marginal disutility(ies) of labor with elliptical
     disutility of labor function and stitched functions at lower bound
@@ -247,7 +255,7 @@ def MDU_n_stitch(nvec, params, graph=False):
 
     RETURNS: MDU_n
     --------------------------------------------------------------------
-    '''
+    """
     l_tilde, b_ellip, upsilon = params
     eps_low = 0.000001
     eps_high = l_tilde - 0.000001
@@ -258,33 +266,65 @@ def MDU_n_stitch(nvec, params, graph=False):
         n_s_high = n_s > eps_high
         n_s_uncstr = (n_s >= eps_low) and (n_s <= eps_high)
         if n_s_uncstr:
-            MDU_n = \
-                ((b_ellip / l_tilde) * ((n_s / l_tilde) **
-                 (upsilon - 1)) * ((1 - ((n_s / l_tilde) ** upsilon)) **
-                 ((1 - upsilon) / upsilon)))
+            MDU_n = (
+                (b_ellip / l_tilde)
+                * ((n_s / l_tilde) ** (upsilon - 1))
+                * (
+                    (1 - ((n_s / l_tilde) ** upsilon))
+                    ** ((1 - upsilon) / upsilon)
+                )
+            )
         elif n_s_low:
-            b2 = (0.5 * b_ellip * (l_tilde ** (-upsilon)) *
-                  (upsilon - 1) * (eps_low ** (upsilon - 2)) *
-                  ((1 - ((eps_low / l_tilde) ** upsilon)) **
-                  ((1 - upsilon) / upsilon)) *
-                  (1 + ((eps_low / l_tilde) ** upsilon) *
-                  ((1 - ((eps_low / l_tilde) ** upsilon)) ** (-1))))
-            b1 = ((b_ellip / l_tilde) * ((eps_low / l_tilde) **
-                  (upsilon - 1)) *
-                  ((1 - ((eps_low / l_tilde) ** upsilon)) **
-                  ((1 - upsilon) / upsilon)) - (2 * b2 * eps_low))
+            b2 = (
+                0.5
+                * b_ellip
+                * (l_tilde ** (-upsilon))
+                * (upsilon - 1)
+                * (eps_low ** (upsilon - 2))
+                * (
+                    (1 - ((eps_low / l_tilde) ** upsilon))
+                    ** ((1 - upsilon) / upsilon)
+                )
+                * (
+                    1
+                    + ((eps_low / l_tilde) ** upsilon)
+                    * ((1 - ((eps_low / l_tilde) ** upsilon)) ** (-1))
+                )
+            )
+            b1 = (b_ellip / l_tilde) * (
+                (eps_low / l_tilde) ** (upsilon - 1)
+            ) * (
+                (1 - ((eps_low / l_tilde) ** upsilon))
+                ** ((1 - upsilon) / upsilon)
+            ) - (
+                2 * b2 * eps_low
+            )
             MDU_n = 2 * b2 * n_s + b1
         elif n_s_high:
-            d2 = (0.5 * b_ellip * (l_tilde ** (-upsilon)) *
-                  (upsilon - 1) * (eps_high ** (upsilon - 2)) *
-                  ((1 - ((eps_high / l_tilde) ** upsilon)) **
-                  ((1 - upsilon) / upsilon)) *
-                  (1 + ((eps_high / l_tilde) ** upsilon) *
-                  ((1 - ((eps_high / l_tilde) ** upsilon)) ** (-1))))
-            d1 = ((b_ellip / l_tilde) * ((eps_high / l_tilde) **
-                  (upsilon - 1)) *
-                  ((1 - ((eps_high / l_tilde) ** upsilon)) **
-                  ((1 - upsilon) / upsilon)) - (2 * d2 * eps_high))
+            d2 = (
+                0.5
+                * b_ellip
+                * (l_tilde ** (-upsilon))
+                * (upsilon - 1)
+                * (eps_high ** (upsilon - 2))
+                * (
+                    (1 - ((eps_high / l_tilde) ** upsilon))
+                    ** ((1 - upsilon) / upsilon)
+                )
+                * (
+                    1
+                    + ((eps_high / l_tilde) ** upsilon)
+                    * ((1 - ((eps_high / l_tilde) ** upsilon)) ** (-1))
+                )
+            )
+            d1 = (b_ellip / l_tilde) * (
+                (eps_high / l_tilde) ** (upsilon - 1)
+            ) * (
+                (1 - ((eps_high / l_tilde) ** upsilon))
+                ** ((1 - upsilon) / upsilon)
+            ) - (
+                2 * d2 * eps_high
+            )
             MDU_n = 2 * d2 * n_s + d1
     # This if is for when nvec is a one-dimensional vector
     elif np.ndim(nvec) == 1:
@@ -294,35 +334,57 @@ def MDU_n_stitch(nvec, params, graph=False):
         nvec_uncstr = np.logical_and(~nvec_low, ~nvec_high)
         MDU_n = np.zeros(p)
         MDU_n[nvec_uncstr] = (
-            (b_ellip / l_tilde) *
-            ((nvec[nvec_uncstr] / l_tilde) ** (upsilon - 1)) *
-            ((1 - ((nvec[nvec_uncstr] / l_tilde) ** upsilon)) **
-             ((1 - upsilon) / upsilon)))
-        b2 = (0.5 * b_ellip * (l_tilde ** (-upsilon)) * (upsilon - 1) *
-              (eps_low ** (upsilon - 2)) *
-              ((1 - ((eps_low / l_tilde) ** upsilon)) **
-              ((1 - upsilon) / upsilon)) *
-              (1 + ((eps_low / l_tilde) ** upsilon) *
-              ((1 - ((eps_low / l_tilde) ** upsilon)) ** (-1))))
-        b1 = ((b_ellip / l_tilde) * ((eps_low / l_tilde) **
-              (upsilon - 1)) *
-              ((1 - ((eps_low / l_tilde) ** upsilon)) **
-              ((1 - upsilon) / upsilon)) - (2 * b2 * eps_low))
+            (b_ellip / l_tilde)
+            * ((nvec[nvec_uncstr] / l_tilde) ** (upsilon - 1))
+            * (
+                (1 - ((nvec[nvec_uncstr] / l_tilde) ** upsilon))
+                ** ((1 - upsilon) / upsilon)
+            )
+        )
+        b2 = (
+            0.5
+            * b_ellip
+            * (l_tilde ** (-upsilon))
+            * (upsilon - 1)
+            * (eps_low ** (upsilon - 2))
+            * (
+                (1 - ((eps_low / l_tilde) ** upsilon))
+                ** ((1 - upsilon) / upsilon)
+            )
+            * (
+                1
+                + ((eps_low / l_tilde) ** upsilon)
+                * ((1 - ((eps_low / l_tilde) ** upsilon)) ** (-1))
+            )
+        )
+        b1 = (b_ellip / l_tilde) * ((eps_low / l_tilde) ** (upsilon - 1)) * (
+            (1 - ((eps_low / l_tilde) ** upsilon)) ** ((1 - upsilon) / upsilon)
+        ) - (2 * b2 * eps_low)
         MDU_n[nvec_low] = 2 * b2 * nvec[nvec_low] + b1
-        d2 = (0.5 * b_ellip * (l_tilde ** (-upsilon)) * (upsilon - 1) *
-              (eps_high ** (upsilon - 2)) *
-              ((1 - ((eps_high / l_tilde) ** upsilon)) **
-              ((1 - upsilon) / upsilon)) *
-              (1 + ((eps_high / l_tilde) ** upsilon) *
-              ((1 - ((eps_high / l_tilde) ** upsilon)) ** (-1))))
-        d1 = ((b_ellip / l_tilde) * ((eps_high / l_tilde) **
-              (upsilon - 1)) *
-              ((1 - ((eps_high / l_tilde) ** upsilon)) **
-              ((1 - upsilon) / upsilon)) - (2 * d2 * eps_high))
+        d2 = (
+            0.5
+            * b_ellip
+            * (l_tilde ** (-upsilon))
+            * (upsilon - 1)
+            * (eps_high ** (upsilon - 2))
+            * (
+                (1 - ((eps_high / l_tilde) ** upsilon))
+                ** ((1 - upsilon) / upsilon)
+            )
+            * (
+                1
+                + ((eps_high / l_tilde) ** upsilon)
+                * ((1 - ((eps_high / l_tilde) ** upsilon)) ** (-1))
+            )
+        )
+        d1 = (b_ellip / l_tilde) * ((eps_high / l_tilde) ** (upsilon - 1)) * (
+            (1 - ((eps_high / l_tilde) ** upsilon))
+            ** ((1 - upsilon) / upsilon)
+        ) - (2 * d2 * eps_high)
         MDU_n[nvec_high] = 2 * d2 * nvec[nvec_high] + d1
 
     if graph:
-        '''
+        """
         ----------------------------------------------------------------
         cur_path    = string, path name of current directory
         output_fldr = string, folder in current path to save files
@@ -338,7 +400,7 @@ def MDU_n_stitch(nvec, params, graph=False):
         MU_stitch   = (500,) vector, stitched marginal utility of
                       consumption
         ----------------------------------------------------------------
-        '''
+        """
         # Create directory if images directory does not already exist
         cur_path = os.path.split(os.path.abspath(__file__))[0]
         output_fldr = "images"
@@ -347,35 +409,56 @@ def MDU_n_stitch(nvec, params, graph=False):
             os.makedirs(output_dir)
 
         # Plot steady-state consumption and savings distributions
-        nvec_ellip = np.linspace(eps_low / 2, eps_high +
-                                 ((l_tilde - eps_high) / 5), 1000)
+        nvec_ellip = np.linspace(
+            eps_low / 2, eps_high + ((l_tilde - eps_high) / 5), 1000
+        )
         MDU_ellip = (
-            (b_ellip / l_tilde) *
-            ((nvec_ellip / l_tilde) ** (upsilon - 1)) *
-            ((1 - ((nvec_ellip / l_tilde) ** upsilon)) **
-             ((1 - upsilon) / upsilon)))
+            (b_ellip / l_tilde)
+            * ((nvec_ellip / l_tilde) ** (upsilon - 1))
+            * (
+                (1 - ((nvec_ellip / l_tilde) ** upsilon))
+                ** ((1 - upsilon) / upsilon)
+            )
+        )
         n_stitch_low = np.linspace(-0.05, eps_low, 500)
         MDU_stitch_low = 2 * b2 * n_stitch_low + b1
         n_stitch_high = np.linspace(eps_high, l_tilde + 0.000005, 500)
         MDU_stitch_high = 2 * d2 * n_stitch_high + d1
         fig, ax = plt.subplots()
-        plt.plot(nvec_ellip, MDU_ellip, ls='solid', color='black',
-                 label='$v\'(n)$: Elliptical')
-        plt.plot(n_stitch_low, MDU_stitch_low, ls='dashed', color='red',
-                 label='$g\'(n)$: low stitched')
-        plt.plot(n_stitch_high, MDU_stitch_high, ls='dotted',
-                 color='blue', label='$g\'(n)$: high stitched')
+        plt.plot(
+            nvec_ellip,
+            MDU_ellip,
+            ls="solid",
+            color="black",
+            label="$v'(n)$: Elliptical",
+        )
+        plt.plot(
+            n_stitch_low,
+            MDU_stitch_low,
+            ls="dashed",
+            color="red",
+            label="$g'(n)$: low stitched",
+        )
+        plt.plot(
+            n_stitch_high,
+            MDU_stitch_high,
+            ls="dotted",
+            color="blue",
+            label="$g'(n)$: high stitched",
+        )
         # for the minor ticks, use no labels; default NullFormatter
         minorLocator = MultipleLocator(1)
         ax.xaxis.set_minor_locator(minorLocator)
-        plt.grid(b=True, which='major', color='0.65', linestyle='-')
-        plt.title('Marginal utility of consumption with stitched ' +
-                  'function', fontsize=14)
-        plt.xlabel(r'Labor $n$')
-        plt.ylabel(r'Marginal disutility $v\'(n)$')
+        plt.grid(b=True, which="major", color="0.65", linestyle="-")
+        plt.title(
+            "Marginal utility of consumption with stitched " + "function",
+            fontsize=14,
+        )
+        plt.xlabel(r"Labor $n$")
+        plt.ylabel(r"Marginal disutility $v\'(n)$")
         plt.xlim((-0.05, l_tilde + 0.01))
         # plt.ylim((-1.0, 1.15 * (b_ss.max())))
-        plt.legend(loc='upper left')
+        plt.legend(loc="upper left")
         output_path = os.path.join(output_dir, "MDU_n_stitched")
         plt.savefig(output_path)
         # plt.show()
@@ -384,7 +467,7 @@ def MDU_n_stitch(nvec, params, graph=False):
 
 
 def get_n_errors(nvec, *args):
-    '''
+    """
     --------------------------------------------------------------------
     Generates vector of static Euler errors that characterize the
     optimal lifetime labor supply decision. Because this function is
@@ -428,18 +511,27 @@ def get_n_errors(nvec, *args):
 
     RETURNS: n_errors
     --------------------------------------------------------------------
-    '''
+    """
     if len(args) == 8:
         # Steady-state, and almost all of TPI solutions pass in cvec.
         # args is length 8
-        (wpath, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff,
-            cvec) = args
+        (wpath, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff, cvec) = args
 
     else:
         # solving for n_{S,1} in TPI does not pass in cvec, but passes
         # in rpath, b_s_vec, and b_sp1_vec instead. args is length 10
-        (wpath, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff,
-            rpath, b_s_vec, b_sp1_vec) = args
+        (
+            wpath,
+            sigma,
+            l_tilde,
+            chi_n_vec,
+            b_ellip,
+            upsilon,
+            diff,
+            rpath,
+            b_s_vec,
+            b_sp1_vec,
+        ) = args
         cvec = get_cons(rpath, wpath, b_s_vec, b_sp1_vec, nvec)
 
     mu_c = MU_c_stitch(cvec, sigma)
@@ -454,7 +546,7 @@ def get_n_errors(nvec, *args):
 
 
 def get_b_errors(cvec, *args):
-    '''
+    """
     --------------------------------------------------------------------
     Generates vector of dynamic Euler errors that characterize the
     optimal lifetime savings decision. Because this function is used for
@@ -486,7 +578,7 @@ def get_b_errors(cvec, *args):
 
     RETURNS: b_errors
     --------------------------------------------------------------------
-    '''
+    """
     (r, beta, sigma, diff) = args
     mu_c = MU_c_stitch(cvec[:-1], sigma)
     mu_cp1 = MU_c_stitch(cvec[1:], sigma)
@@ -500,7 +592,7 @@ def get_b_errors(cvec, *args):
 
 
 def bn_errors(bn_vec, *args):
-    '''
+    """
     --------------------------------------------------------------------
     Computes labor supply and savings Euler errors for given b_{s+1} and
     n_s vectors and given the path of interest rates and wages
@@ -544,15 +636,25 @@ def bn_errors(bn_vec, *args):
 
     RETURNS: bn_errors
     --------------------------------------------------------------------
-    '''
-    (rpath, wpath, b_init, p, beta, sigma, l_tilde, chi_n_vec, b_ellip,
-        upsilon, diff) = args
-    b_sp1_vec = np.append(bn_vec[:p - 1], 0.0)
-    n_vec = bn_vec[p - 1:]
+    """
+    (
+        rpath,
+        wpath,
+        b_init,
+        p,
+        beta,
+        sigma,
+        l_tilde,
+        chi_n_vec,
+        b_ellip,
+        upsilon,
+        diff,
+    ) = args
+    b_sp1_vec = np.append(bn_vec[: p - 1], 0.0)
+    n_vec = bn_vec[p - 1 :]
     b_s_vec = np.append(b_init, b_sp1_vec[:-1])
     c_vec = get_cons(rpath, wpath, b_s_vec, b_sp1_vec, n_vec)
-    n_args = (wpath, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff,
-              c_vec)
+    n_args = (wpath, sigma, l_tilde, chi_n_vec, b_ellip, upsilon, diff, c_vec)
     n_errors = get_n_errors(n_vec, *n_args)
     b_args = (rpath[1:p], beta, sigma, diff)
     b_errors = get_b_errors(c_vec, *b_args)

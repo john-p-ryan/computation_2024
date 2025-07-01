@@ -1,4 +1,4 @@
-'''
+"""
 ------------------------------------------------------------------------
 This module contains the functions that generate the variables
 associated with firms' optimization in the steady-state or in the
@@ -11,18 +11,19 @@ This Python module defines the following function(s):
     get_w()
     get_r()
 ------------------------------------------------------------------------
-'''
+"""
+
 # Import packages
 
-'''
+"""
 ------------------------------------------------------------------------
     Functions
 ------------------------------------------------------------------------
-'''
+"""
 
 
 def get_w(r, params):
-    '''
+    """
     --------------------------------------------------------------------
     Solve for steady-state wage w or time path of wages w_t
     --------------------------------------------------------------------
@@ -44,16 +45,19 @@ def get_w(r, params):
 
     RETURNS: w
     --------------------------------------------------------------------
-    '''
+    """
     A, alpha, delta = params
-    w = (1 - alpha) * A * (((alpha * A) / (r + delta)) **
-                           (alpha / (1 - alpha)))
+    w = (
+        (1 - alpha)
+        * A
+        * (((alpha * A) / (r + delta)) ** (alpha / (1 - alpha)))
+    )
 
     return w
 
 
 def get_r(K, L, params):
-    '''
+    """
     --------------------------------------------------------------------
     Solve for steady-state interest rate r or time path of interest
     rates r_t
@@ -78,7 +82,7 @@ def get_r(K, L, params):
 
     RETURNS: r
     --------------------------------------------------------------------
-    '''
+    """
     A, alpha, delta = params
     r = alpha * A * ((L / K) ** (1 - alpha)) - delta
 
