@@ -6,6 +6,7 @@ Household functions.
 
 # Packages
 import numpy as np
+import scipy.interpolate as itp
 import scipy.optimize as opt
 from ogcore import tax, utils
 
@@ -1329,9 +1330,16 @@ def solve_HH(
             n_interp = n[unique_idx]
             b_splus1_interp = b_grid[unique_idx]
             # Extrapolate linearly for points outside the solved endogenous grid
-            c_policy[s, :, z_index] = np.interp(b_grid, b_clean, c_interp, left=c_interp[0], right=c_interp[-1])
-            n_policy[s, :, z_index] = np.interp(b_grid, b_clean, n_interp, left=n_interp[0], right=n_interp[-1])
-            b_policy[s, :, z_index] = np.interp(b_grid, b_clean, b_splus1_interp, left=b_splus1_interp[0], right=b_splus1_interp[-1])
+            #c_policy[s, :, z_index] = np.interp(b_grid, b_clean, c_interp, left=c_interp[0], right=c_interp[-1])
+            #n_policy[s, :, z_index] = np.interp(b_grid, b_clean, n_interp, left=n_interp[0], right=n_interp[-1])
+            #b_policy[s, :, z_index] = np.interp(b_grid, b_clean, b_splus1_interp, left=b_splus1_interp[0], right=b_splus1_interp[-1])
+            # use scipy pchip interpolation
+            c_itp = itp.PchipInterpolator(b_clean, c_interp, extrapolate=True)
+            n_itp = itp.PchipInterpolator(b_clean, n_interp, extrapolate=True)
+            b_splus1_itp = itp.PchipInterpolator(b_clean, b_splus1_interp, extrapolate=True)
+            c_policy[s, :, z_index] = c_itp(b_grid)
+            n_policy[s, :, z_index] = n_itp(b_grid)
+            b_policy[s, :, z_index] = b_splus1_itp(b_grid)
 
 
     return b_policy, c_policy, n_policy

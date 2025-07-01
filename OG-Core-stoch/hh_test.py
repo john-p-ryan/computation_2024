@@ -1254,6 +1254,16 @@ def test_solve_HH():
         args["mtrx_params"][s_test, :], args["t"][s_test], args["j"], p, "SS"
     )
 
+    # print the maximum residuals and the index of the maximum residuals
+    print("Max BC residual:", np.max(np.abs(bc_resid)))
+    print("Index of max BC residual:", np.argmax(np.abs(bc_resid)))
+    print("Max FOC labor residual:", np.max(np.abs(foc_lab_resid)))
+    print("Index of max FOC labor residual:", np.argmax(np.abs(foc_lab_resid)))
+
     # The residuals should be very close to zero
     assert np.isclose(bc_resid, 0, atol=1e-5)
-    assert np.isclose(foc_lab_resid, 0, atol=1e-4) # persistent error - can't get it lower?
+    assert np.isclose(foc_lab_resid, 0, atol=1e-5) # persistent error - can't get it lower?
+
+
+
+# %%
