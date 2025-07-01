@@ -1703,7 +1703,13 @@ def test_ogcore_HH_soln():
     )
 
     # Now call the solve_HH function to get the household policy functions
+    # add new parameters for solve_HH
+    p.nz = 1
+    p.z_grid = np.array([1.0])
+    p.Z = np.array([[1.0]])
+    # create b_grid for solve_HH
     b_grid = np.linspace(0.001, 20, 100)  # Asset grid for the test
+    # call solve_HH with the same parameters as in the inner loop
     b_policy, c_policy, n_policy = household.Solve_HH(
         r_p,
         w,
