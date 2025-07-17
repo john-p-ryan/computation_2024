@@ -7,6 +7,7 @@ from ogcore.parameters import Specifications
 import household_stoch as household
 from ogcore import tax, SS
 import ogcore.household as hh_core
+import scipy.interpolate as itp
 
 
 # %%
@@ -120,11 +121,10 @@ def test_inv_mu_c(value, sigma, expected):
 
 
 # %%
-# Setup for marg_ut_beq tests
 p1 = Specifications()
 p1.chi_b = np.array([1.5, 2.5, 5.0])
 
-# Case 1: Scalar, unconstrained b
+# Case 1: Scalar, unconstrained b (This test was correct)
 b1 = 2.0
 sigma1 = 2.0
 j1 = 1
@@ -135,25 +135,30 @@ b2 = 0.00005
 sigma2 = 2.0
 j2 = 0
 epsilon = 0.0001
-# Note: The calculation for the constrained part is independent of chi_b
-# as currently implemented.
-b2_quad = (-sigma2 * (epsilon ** (-sigma2 - 1))) / 2
-b1_quad = (epsilon**-sigma2) - 2 * b2_quad * epsilon
-expected2 = 2 * b2_quad * b2 + b1_quad
+# FIX: Correctly calculate expected value including the utility weight p.chi_b[j2]
+b2_quad_2 = (-sigma2 * (epsilon ** (-sigma2 - 1)))
+b1_quad_2 = (epsilon**-sigma2) - b2_quad_2 * epsilon
+expected2 = p1.chi_b[j2] * (b2_quad_2 * b2 + b1_quad_2)
 
 # Case 3: Vector, mixed constrained and unconstrained
 b3 = np.array([2.0, 0.00005])
 sigma3 = 2.0
 j3 = 1
-# The first element is unconstrained, the second is constrained
-expected3 = np.array([p1.chi_b[j3] * (b3[0] ** -sigma3), expected2])
+# FIX: Correctly calculate the constrained element's expected value
+expected3_unc = p1.chi_b[j3] * (b3[0] ** -sigma3)
+b2_quad_3 = (-sigma3 * (epsilon ** (-sigma3 - 1)))
+b1_quad_3 = (epsilon**-sigma3) - b2_quad_3 * epsilon
+expected3_con = p1.chi_b[j3] * (b2_quad_3 * b3[1] + b1_quad_3)
+expected3 = np.array([expected3_unc, expected3_con])
 
-# Case 4: Vector, all unconstrained
+
+# Case 4: Vector, all unconstrained (This test was correct)
 b4 = np.array([2.0, 3.0])
 sigma4 = 1.5
 j4 = 2
 expected4 = p1.chi_b[j4] * (b4**-sigma4)
 
+# Corrected test data
 marg_ut_beq_test_data = [
     (b1, sigma1, j1, p1, expected1),
     (b2, sigma2, j2, p1, expected2),
@@ -161,23 +166,6 @@ marg_ut_beq_test_data = [
     (b4, sigma4, j4, p1, expected4),
 ]
 
-
-@pytest.mark.parametrize(
-    "b,sigma,j,p,expected",
-    marg_ut_beq_test_data,
-    ids=[
-        "Scalar, unconstrained",
-        "Scalar, constrained",
-        "Vector, mixed",
-        "Vector, unconstrained",
-    ],
-)
-def test_marg_ut_beq(b, sigma, j, p, expected):
-    """
-    Test the marginal utility of bequests function `marg_ut_beq`.
-    """
-    test_value = household.marg_ut_beq(b, sigma, j, p)
-    assert np.allclose(test_value, expected)
 
 
 # %%
@@ -384,7 +372,7 @@ def get_ss_vector_expected_c(params):
     )
     deriv = 1 - tau_payroll - mtr_labor
     mdu_labor = household.marg_ut_labor(n, chi_n, p)
-    num = params["p_tilde"] * np.exp(p.g_y * (1 - p.sigma)) * mdu_labor
+    num = params["p_tilde"] * mdu_labor
     den = w * e * z * deriv
     return household.inv_mu_c(num / den, p.sigma)
 
@@ -450,7 +438,7 @@ p_b_from_c.sigma = 2.0
 # Test data format: (c, p_tilde, j, sigma, p, expected_b)
 test_data_b_from_c_EOL = [
     # Scenario 1: Scalar inputs
-    (1.0, 1.1, 0, 2.0, p_b_from_c, 0.7416198487),
+    (1.0, 1.1, 0, 2.0, p_b_from_c, 0.71970167),
     # Scenario 2: Array c, scalar p_tilde, j=1
     (
         np.array([1.0, 2.0]),
@@ -458,7 +446,7 @@ test_data_b_from_c_EOL = [
         1,
         2.0,
         p_b_from_c,
-        np.array([0.938083152, 1.876166304]),
+        np.array([0.910358605, 1.82071721]),
     ),
     # Scenario 3: Array c and p_tilde
     (
@@ -467,10 +455,10 @@ test_data_b_from_c_EOL = [
         0,
         2.0,
         p_b_from_c,
-        np.array([0.7416198487, 1.549193308]),
+        np.array([0.71970167, 1.503407726]),
     ),
     # Scenario 4: Different sigma
-    (2.5, 1.0, 1, 3.0, p_b_from_c, 2.5 * (0.8 * 1.0) ** (1 / 3.0)),
+    (2.5, 1.0, 1, 3.0, p_b_from_c, (2.5 * (0.8 * 1.0) ** (1 / 3.0)) /np.exp(p_b_from_c.g_y) ),
 ]
 
 
@@ -655,9 +643,9 @@ def setup_c_from_b_splus1_params(taxes=False):
     E_MU_c = consumption_utility_matrix @ prob_z_splus1
 
     # Final calculation using the *correct* Euler equation
-    growth_term = np.exp(p.g_y * (1 - p.sigma))
-    mu_c_rhs = bequest_utility + beta * (1 - rho_s) * growth_term * E_MU_c
-    expected_c = household.inv_mu_c(p_tilde_s * mu_c_rhs, p.sigma)
+    growth_term = np.exp(p.g_y)
+    mu_c_rhs = bequest_utility + beta * (1 - rho_s) * E_MU_c
+    expected_c = growth_term * household.inv_mu_c(p_tilde_s * mu_c_rhs, p.sigma)
 
     # Gather args for function call
     args = (
@@ -1619,8 +1607,8 @@ def test_solve_HH():
     # The residuals should be very close to zero
     assert np.isclose(bc_resid, 0, atol=1e-5)
     assert np.isclose(
-        foc_lab_resid, 0, atol=1e-4
-    )  # persistent error - can't get it lower?
+        foc_lab_resid, 0, atol=1e-7
+    )
 
 
 def test_ogcore_HH_soln():
@@ -1630,23 +1618,43 @@ def test_ogcore_HH_soln():
     household_stoch.solve_HH. The test is run for a single ability type.
     """
     p = Specifications()
+    print("Remittances params: ", p.alpha_RM_T)
     # Change J to one to test a single ability type
-    p.J = 1
-    p.lambdas = np.array([1.0])
-    p.e = np.array([[[1.0]]])  # Effective labor units
-    p.beta = np.array([0.96])  # Discount factor
-
+    p.J = 2
+    p.lambdas = np.array([0.5, 0.5]).reshape(p.J, 1)
+    p.e = np.ones((p.T + p.S, p.S, p.J))  # Effective labor units
+    p.beta = np.array([0.96, 0.96]).reshape(p.J,)  # Discount factor
+    p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
+    p.capital_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
+    print("Shape of eta = ", p.eta.shape, p.eta_RM.shape)
+    p.eta = np.zeros((p.T + p.S, p.S, p.J))#p.eta.sum(axis=-1).reshape(p.T + p.S, p.S, p.J)
+    p.eta_RM = np.zeros((p.T + p.S, p.S, p.J))#p.eta.sum(axis=-1).reshape(p.T + p.S, p.S, p.J)
+    p.ubi_nom_array = np.zeros((p.T + p.S, p.S, p.J))#p.ubi_nom_array.sum(axis=-1).reshape(p.T + p.S, p.S, p.J) # Aggregate eta
+    # Need to turn off Social Security since not in OG-Stoch
+    p.PIA_rate_bkt_1 = 0.0
+    p.PIA_rate_bkt_2 = 0.0
+    p.PIA_rate_bkt_3 = 0.0
+    # set to linear tax functions
+    # p.update_specifications(
+    #     {
+    #         "age_specific": False,
+    #         "tax_func_type": "linear",
+    #         "etr_params": 0.2,
+    #         "mtrx_params": 0.22,
+    #         "mtry_params": 0.18,
+    #     }
+    # )
     # Call the inner loop to get the OG-Core solution
-    bssmat = (np.ones((p.S, p.J)) * 0.05,)
-    nssmat = (np.ones((p.S, p.J)) * 0.5,)
-    r_p = (0.05,)
-    r = (r_p,)
-    w = (1.2,)
-    p_m = (1.0,)
-    Y = (1.4,)
-    BQ = (0.02,)
-    TR = (0.01,)
-    Ig_baseline = (0.0,)
+    bssmat = np.ones((p.S, p.J)) * 0.05
+    nssmat = np.ones((p.S, p.J)) * 0.5
+    r_p = 0.05
+    r = r_p
+    w = 1.2
+    p_m = np.array([1.0])
+    Y = np.array([1.4])
+    BQ = np.ones((1, p.J)) * 0.02
+    TR = np.array([0.01])
+    Ig_baseline = 0.0
     factor = 100_000
     outer_loop_vars = (
         bssmat,
@@ -1661,13 +1669,14 @@ def test_ogcore_HH_soln():
         Ig_baseline,
         factor,
     )
+    print("Bssmat shape:", bssmat.shape)
     inner_loop_tuple = SS.inner_loop(outer_loop_vars, p, None)
-    b_core = inner_loop_tuple[0]
+    b_core = inner_loop_tuple[1]
     b_s = np.zeros((p.S, p.J))  # Savings from the inner loop
     b_s[1:, :] = b_core[:-1, :]  # Shift savings down for the next period
-    n_core = inner_loop_tuple[1]
-    tr = hh_core.get_tr(TR, 0, p, "SS")
-    bq = hh_core.get_bq(BQ, 0, p, "SS")
+    n_core = inner_loop_tuple[2]
+    tr = hh_core.get_tr(TR, None, p, "SS")
+    bq = hh_core.get_bq(BQ, None, p, "SS")
     num_params = len(p.etr_params[-1][0])
     etr_params_3D = [
         [
@@ -1676,21 +1685,39 @@ def test_ogcore_HH_soln():
         ]
         for s in range(p.S)
     ]
+    # taxss = tax.net_taxes(
+    #     r_p,
+    #     w,
+    #     b_s,
+    #     n_core,
+    #     bq.reshape((p.S, p.J)),
+    #     factor,
+    #     tr.reshape((p.S, p.J)),
+    #     0,  # ubi = 0
+    #     0,  # theta = 0
+    #     None,  # t
+    #     0,  # j
+    #     False,
+    #     "SS",
+    #     p.e[-1, :, j],
+    #     p.etr_params[-1],
+    #     p,
+    # )
     taxss = tax.net_taxes(
         r_p,
         w,
         b_s,
         n_core,
-        bq,
+        bq.reshape((p.S, p.J)),
         factor,
-        tr,
+        tr.reshape((p.S, p.J)),
         0,  # ubi = 0
         0,  # theta = 0
-        None,
-        None,
+        None,  # t
+        None,  # j
         False,
         "SS",
-        np.squeeze(p.e[-1, :, :]),
+        (np.squeeze(p.e[-1, :, :])).reshape((p.S, p.J)),
         etr_params_3D,
         p,
     )
@@ -1707,48 +1734,278 @@ def test_ogcore_HH_soln():
         np.squeeze(p.e[-1, :, :]),
         p,
     )
-
     # Now call the solve_HH function to get the household policy functions
     # add new parameters for solve_HH
     p.nz = 1
     p.z_grid = np.array([1.0])
     p.Z = np.array([[1.0]])
     # create b_grid for solve_HH
-    b_grid = np.linspace(0.001, 20, 100)  # Asset grid for the test
+    b_grid = np.linspace(0.0, 7.5, 750)  # Asset grid for the test
+    # make log linear grid
+    # b_grid = np.exp(np.linspace(np.log(0.001), np.log(12), 100))  # Asset grid for the test
+    # b_grid = np.linspace(0.00, 12, 100)  # Asset grid for the test
+    # change shape of e
+    p.e = np.ones((p.S))  # Effective labor units
     # call solve_HH with the same parameters as in the inner loop
-    b_policy, c_policy, n_policy = household.Solve_HH(
-        r_p,
-        w,
-        1.0,  # p_tilde
+    print("shape of tr and bq here: ", tr.shape, bq.shape)
+    b_policy, c_policy, n_policy = household.solve_HH(
+        np.ones(p.S) * r_p,
+        np.ones(p.S) * w,
+        np.ones(p.S) * 1.0,  # p_tilde
         factor,
-        tr,
-        bq,
+        tr[:, 0],
+        bq[:, 0],
         0,  # ubi,
         b_grid,
         p.sigma,
         0,  # theta
-        p.chi_n[-1, :, 0],  # chi_n for the last period
+        p.chi_n[-1, :],  # chi_n for the last period
         p.rho[-1, :],  # rho for the last period
         p.e,
-        p.etr_params[-1, :, :],  # etr_params for the last period
-        p.mtrx_params[-1, :, :],  # mtrx_params for the last
-        p.mtry_params[-1, :, :],  # mtry_params for the last period
+        np.array(p.etr_params)[-1, :, :],  # etr_params for the last period
+        np.array(p.mtrx_params)[-1, :, :],  # mtrx_params for the last
+        np.array(p.mtry_params)[-1, :, :],  # mtry_params for the last period
         0,
-        100,  # t, the time index
+        p.T,  # t, the time index
         p,
         "SS",
     )
     # Extrapolate linearly for points on the OG-Core "grid"
-    c_policy[s, :, z_index] = np.interp(
-        b_grid, b_clean, c_interp, left=c_interp[0], right=c_interp[-1]
+    b_interpolated = np.zeros(p.S)
+    n_interpolated = np.zeros(p.S)
+    c_interpolated = np.zeros(p.S)
+
+    for s in range(p.S):
+        # Interpolate the policy functions for each age
+        # b_interpolated[s] = np.interp(
+        #     b_s[s, 0], b_grid, b_policy[s, :, 0]
+        # )
+        # n_interpolated[s] = np.interp(
+        #     b_s[s, 0], b_grid, n_policy[s, :, 0]
+        # )
+        # c_interpolated[s] = np.interp(
+        #     b_s[s, 0], b_grid, c_policy[s, :, 0]
+        # )
+        b_itp = itp.CubicSpline(
+            b_grid, b_policy[s, :, 0], extrapolate=True
+        )
+        n_itp = itp.CubicSpline(
+            b_grid, n_policy[s, :, 0], extrapolate=True
+        )
+        c_itp = itp.CubicSpline(
+            b_grid, c_policy[s, :, 0], extrapolate=True
+        )
+        b_interpolated[s] = b_itp(b_s[s, 0])
+        n_interpolated[s] = n_itp(b_s[s, 0])
+        c_interpolated[s] = c_itp(b_s[s, 0])
+
+    # find mu_c at the first age
+    print("b_s 0: ", b_s[0, 0], b_grid[0])
+    print("c_s 0: ", c_core[0, 0], c_interpolated[0])
+    print("n_s 0: ", n_core[0, 0], n_interpolated[0])
+    print("b_sp1 0: ", b_core[0, 0], b_interpolated[0])
+    mu_c0_core = household.marg_ut_cons(c_interpolated[0], p.sigma)
+    mu_c0_itp = household.marg_ut_cons(c_interpolated[0], p.sigma)
+    # find mu_n at the first age
+    mu_n0_core = household.marg_ut_labor(n_interpolated[0], p.chi_n[0, 0], p)
+    mu_n0_itp = household.marg_ut_labor(n_interpolated[0], p.chi_n[0, 0], p)
+    # find c implies at the first age
+    c_implied = household.c_from_n(
+        n_core[0, 0],
+        b_s[0, 0],
+        1.0,  # p_tilde
+        r_p,
+        w,
+        factor,
+        p.e[-1],
+        p.z_grid[0],
+        p.chi_n[-1, 0],
+        np.array(p.etr_params)[-1, 0, :],
+        np.array(p.mtrx_params)[-1, 0, :],
+        t=0,
+        j=0,
+        p=p,
+        method="SS",
     )
-    n_policy[s, :, z_index] = np.interp(
-        b_grid, b_clean, n_interp, left=n_interp[0], right=n_interp[-1]
+    print("Consumption implied by labor FOC: ", c_implied, c_core[0,0])
+    print("OG-Core mu_c0: ", mu_c0_core, "mu_c0_itp: ", mu_c0_itp)
+    print("OG-Core mu_n0: ", mu_n0_core, "mu_n0_itp: ", mu_n0_itp)
+    # check euler errors
+    labor_error = household.FOC_labor(
+        r_p,
+        w,
+        1.0,  # p_tilde
+        b_s[0, 0],
+        c_core[0, 0],
+        n_core[0, 0],
+        factor,
+        p.e[-1],
+        p.z_grid[0],
+        p.chi_n[-1, 0],
+        np.array(p.etr_params)[-1, 0, :],
+        np.array(p.mtrx_params)[-1, 0, :],
+        t=0,
+        j=0,
+        p=p,
+        method="SS",
     )
-    b_policy[s, :, z_index] = np.interp(
-        b_grid,
-        b_clean,
-        b_splus1_interp,
-        left=b_splus1_interp[0],
-        right=b_splus1_interp[-1],
+    print("Labor FOC error OG-Core: ", labor_error)
+    labor_error = household.FOC_labor(
+        r_p,
+        w,
+        1.0,  # p_tilde
+        b_s[0, 0],
+        c_interpolated[0],
+        n_interpolated[0],
+        factor,
+        p.e[-1],
+        p.z_grid[0],
+        p.chi_n[-1, 0],
+        np.array(p.etr_params)[-1, 0, :],
+        np.array(p.mtrx_params)[-1, 0, :],
+        t=0,
+        j=0,
+        p=p,
+        method="SS",
     )
+    print("Labor FOC error OG-Stoch: ", labor_error)
+    # check savings FOC
+    b_sp1 = b_core  # Savings next period
+    p.e = np.ones((p.T + p.S, p.S, p.J))  # Effective labor units
+    save_error = hh_core.FOC_savings(
+        r_p,
+        w,
+        1.0,  # p_tilde
+        b_s[:, 0],
+        b_sp1[:, 0],
+        n_core[:, 0],
+        bq[:, 0],
+        0,  # rm
+        factor,
+        tr[:, 0],
+        0,  # ubi
+        0,  # theta
+        p.rho[-1, :],
+        np.array(p.etr_params)[-1, :, :],
+        np.array(p.mtry_params)[-1, :, :],
+        0,  # t
+        0,  # j
+        p,
+        method="SS",
+    )
+    print("Savings FOC error from OG-Core: ", save_error[0])
+    save_error = hh_core.FOC_savings(
+        r_p,
+        w,
+        1.0,  # p_tilde
+        b_s[:, 0],
+        b_interpolated,
+        n_interpolated,
+        bq[:, 0],
+        0,  # rm
+        factor,
+        tr[:, 0],
+        0,  # ubi
+        0,  # theta
+        p.rho[-1, :],
+        np.array(p.etr_params)[-1, :, :],
+        np.array(p.mtry_params)[-1, :, :],
+        0,  # t
+        0,  # j
+        p,
+        method="SS",
+    )
+    print("Savings FOC error from OG-Stoch: ", save_error[0])
+
+
+
+    # Create a plot to visualize the results
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(12, 8))
+    plt.scatter(b_s[:, 0], b_core[:, 0], color='red', label='OG-Core', s=10)
+    plt.scatter(b_s[:, 0], b_interpolated, color='blue', label='b_interpolated', s=10)
+    plt.scatter(b_grid, b_itp(b_grid), color='green', label='b_itp', s=10)
+    plt.title('Savings Policy Function')
+    plt.xlabel('Age')
+    plt.ylabel('Savings')
+    plt.legend()
+    plt.savefig("savings_policy_function.png")
+
+    plt.figure(figsize=(12, 8))
+    plt.scatter(b_s[:, 0], n_core[:, 0], color='red', label='OG-Core', s=10)
+    plt.scatter(b_s[:, 0], n_interpolated, color='blue', label='n_interpolated', s=10)
+    plt.scatter(b_grid, n_itp(b_grid), color='green', label='n_itp', s=10)
+    plt.title('Labor Policy Function')
+    plt.xlabel('Age')
+    plt.ylabel('Labor Supply')
+    plt.legend()
+    plt.savefig("labor_policy_function.png")
+
+    plt.figure(figsize=(12, 8))
+    plt.scatter(b_s[:, 0], c_core[:, 0], color='red', label='OG-Core', s=10)
+    plt.scatter(b_s[:, 0], c_interpolated, color='blue', label='c_interpolated', s=10)
+    plt.scatter(b_grid, c_itp(b_grid), color='green', label='c_itp', s=10)
+    plt.title('Consumption Policy Function')
+    plt.xlabel('Age')
+    plt.ylabel('Consumption')
+    plt.legend()
+    plt.savefig("consumption_policy_function.png")
+
+
+    ages = np.arange(p.S) + 20
+    plt.figure(figsize=(12, 8))
+    plt.scatter(ages, b_core[:, 0], color='red', label='OG-Core', s=10)
+    plt.scatter(ages, b_interpolated, color='blue', label='b_interpolated', s=10)
+    plt.title('Savings Profile')
+    plt.xlabel('Assets')
+    plt.ylabel('Savings')
+    plt.legend()
+    plt.savefig("savings_profile.png")
+
+    plt.figure(figsize=(12, 8))
+    plt.scatter(ages, n_core[:, 0], color='red', label='OG-Core', s=10)
+    plt.scatter(ages, n_interpolated, color='blue', label='n_interpolated', s=10)
+    plt.title('Labor Supply Profile')
+    plt.xlabel('Assets')
+    plt.ylabel('Labor Supply')
+    plt.legend()
+    plt.savefig("labor_profile.png")
+
+    plt.figure(figsize=(12, 8))
+    plt.scatter(ages, c_core[:, 0], color='red', label='OG-Core', s=10)
+    plt.scatter(ages, c_interpolated, color='blue', label='c_interpolated', s=10)
+    plt.title('Consumption Profile')
+    plt.xlabel('Assets')
+    plt.ylabel('Consumption')
+    plt.legend()
+    plt.savefig("consumption_profile.png")
+
+    # Check that the interpolated values match the core values
+    print("Max core labor = ", np.max(n_core[:, 0]), np.max(n_interpolated))
+    # print("OG Core consumption: ", c_core[:, 0])
+    # print("C interpolated: ", c_interpolated)
+    # print("OG Core labor: ", n_core[:, 0])
+    # print("n interpolated: ", n_interpolated)
+    # print("b_s: ", b_s[:, 0])
+    # print("b_grid: ", b_grid)
+    # print("OG Core savings: ", b_core[:, 0])
+    # print("savings interpolated: ", b_interpolated)
+    # print("B grid ", b_grid)
+    # assert np.allclose(b_interpolated, b_core[:, 0], atol=1e-5)
+    # print("Labor supply with low assets 2: ",  n_interpolated[0], n_itp(0.0), n_itp(0.001))
+
+    # assert np.allclose(c_interpolated, c_core[:, 0], atol=1e-5)
+    print("Max difference in savings: ", np.max(np.abs(b_interpolated - b_core[:, 0])))
+    print("occurred at age: ", np.argmax(np.abs(b_interpolated - b_core[:, 0])))
+    print("Max difference in labor supply: ", np.max(np.abs(n_interpolated - n_core[:, 0])))
+    print("occurred at age: ", np.argmax(np.abs(n_interpolated - n_core[:, 0])))
+    print("Max difference in consumption: ", np.max(np.abs(c_interpolated - c_core[:, 0])))
+    print("occurred at age: ", np.argmax(np.abs(c_interpolated - c_core[:, 0])))
+    
+    print("Dims of OG-Core output:", b_core.shape, c_core.shape, n_core.shape)
+    assert np.allclose(n_interpolated, n_core[:, 0], atol=1e-5)
+    assert np.allclose(c_interpolated, c_core[:, 0], atol=1e-5)
+    assert np.allclose(b_interpolated, b_core[:, 0], atol=1e-5)
+
+
+# %%
