@@ -1057,6 +1057,8 @@ def solve_HH(
     # start at the end of life
     s_EOL = p.S - 1
     current_t = t[s_EOL] if hasattr(t, "__len__") else t
+    ubi_sEOL = ubi[s_EOL] if isinstance(ubi, np.ndarray) and ubi.size == p.S else ubi
+    theta_sEOL = theta[s_EOL] if isinstance(theta, np.ndarray) and theta.size == p.S else theta
     for z_index, z in enumerate(p.z_grid):
         for b_index, b in enumerate(b_grid):
             # use root finder to solve problem at end of life
@@ -1066,9 +1068,9 @@ def solve_HH(
                 r[s_EOL],
                 w[s_EOL],
                 tr[s_EOL],
-                ubi,
+                ubi_sEOL,
                 bq[s_EOL],
-                theta,
+                theta_sEOL,
                 factor,
                 e[s_EOL],
                 z,
@@ -1105,6 +1107,8 @@ def solve_HH(
 
     # iterate backwards with Euler equation
     for s in range(p.S - 2, -1, -1):
+        ubi_s = ubi[s] if isinstance(ubi, np.ndarray) and ubi.size == p.S else ubi
+        theta_s = theta[s] if isinstance(theta, np.ndarray) and theta.size == p.S else theta
         for z_index, z in enumerate(p.z_grid):  #NOTE: Maybe able to parallelize this loop
             c = c_from_b_splus1(
                 r[s + 1],
@@ -1139,9 +1143,9 @@ def solve_HH(
                     p_tilde[s],
                     factor,
                     tr[s],
-                    ubi,
+                    ubi_s,
                     bq[s],
-                    theta,
+                    theta_s, #[s],
                     e[s],
                     z,
                     chi_n[s],
@@ -1156,7 +1160,7 @@ def solve_HH(
                     [b_splus1, n_policy[s + 1, b_splus1_index, z_index]]
                 )
                 # Use a try-except block to handle potential root-finding failures
-                res = opt.root(HH_system, initial_guess, args=args, method='lm')
+                res = opt.root(HH_system, initial_guess, args=args, method='df-sane')
                 if res.success:
                     b[b_splus1_index], n[b_splus1_index] = res.x
                 else:  # Handle failure, e.g., by using the guess
@@ -1184,3 +1188,106 @@ def solve_HH(
     print("Labor supply for young with little assets:", n_policy[0, 1, :])
 
     return b_policy, c_policy, n_policy
+
+
+
+def solve_all_households_ss(r, w, p_tilde, factor, TR, BQ, p, b_grid):
+    """
+    Solves for the steady-state policy functions for all household types j.
+
+    This function iterates through each ability type `j`, calculates the
+    type-specific transfers and bequests, and then calls the household
+    solver `household_stoch.solve_HH` to find the optimal policy functions
+    for savings, consumption, and labor supply over an asset grid and
+    for each productivity shock.
+
+    Args:
+        r (scalar): The steady-state real interest rate.
+        w (scalar): The steady-state real wage rate.
+        p_tilde (scalar): The steady-state composite good price.
+        factor (scalar): The steady-state scaling factor.
+        TR (scalar): Aggregate government transfers in the steady state.
+        BQ (array_like): Aggregate bequests for each ability type (J,).
+        p (Specifications): An object containing all model parameters.
+        b_grid (array): The grid of assets over which to solve the household problem, shape (nb,).
+
+    Returns:
+        tuple: A tuple containing the policy functions and the asset grid:
+            - b_policy (ndarray): Savings policy function, shape (S, J, nb, nz).
+            - c_policy (ndarray): Consumption policy function, shape (S, J, nb, nz).
+            - n_policy (ndarray): Labor supply policy function, shape (S, J, nb, nz).
+            - b_grid (ndarray): The grid of assets, shape (nb,).
+    """
+    nb = len(b_grid)
+
+    # Initialize policy function arrays to store results for all J types
+    b_policy_all = np.zeros((p.S, p.J, nb, p.nz))
+    c_policy_all = np.zeros((p.S, p.J, nb, p.nz))
+    n_policy_all = np.zeros((p.S, p.J, nb, p.nz))
+    ss_etr_params = np.array(p.etr_params)[-1, :, :]
+    ss_mtrx_params = np.array(p.mtrx_params)[-1, :, :]
+    ss_mtry_params = np.array(p.mtry_params)[-1, :, :]
+
+
+    # Loop over each ability type
+    for j in range(p.J): # CAN PARALLELIZE HERE
+        # --- Prepare arguments for the household solver for type j ---
+
+        # Create S-length vectors for time-varying parameters (constant in SS)
+        ss_r = np.ones(p.S) * r
+        ss_w = np.ones(p.S) * w
+        ss_p_tilde = np.ones(p.S) * p_tilde
+        
+        # Calculate type- and age-specific transfers and bequests
+        # The `get_bq` and `get_tr` functions from household_stoch handle the SS case
+        tr_j = get_tr(TR, j, p, "SS")
+        bq_j = get_bq(BQ, j, p, "SS")
+        ubi_j = p.ubi_nom_array[-1, :, j] / factor
+
+        # Extract SS parameters for the current type j
+        # [-1] is to get the steady-state value from time-path arrays
+        e_j = p.e[-1, :, j]
+        chi_n = p.chi_n[-1, :]
+
+        # For SS, the time index `t` is not advancing
+        ss_t = np.zeros(p.S, dtype=int)
+        
+        # In the stochastic model provided, theta (pension replacement rate) is
+        # not endogenously calculated. Following the test files, we set it to zero.
+        theta_j = np.zeros(p.S)
+
+        # Assemble the dictionary of arguments for the solver
+        solver_args = {
+            "r": ss_r,
+            "w": ss_w,
+            "p_tilde": ss_p_tilde,
+            "factor": factor,
+            "tr": tr_j,
+            "bq": bq_j,
+            "ubi": ubi_j,
+            "b_grid": b_grid,
+            "sigma": p.sigma,
+            "theta": theta_j,
+            "chi_n": chi_n,
+            "rho": p.rho[-1, :],
+            "e": e_j,
+            "etr_params": ss_etr_params,
+            "mtrx_params": ss_mtrx_params,
+            "mtry_params": ss_mtry_params,
+            "j": j,
+            "t": ss_t,
+            "p": p,
+            "method": "SS",
+        }
+
+        # --- Solve the household problem for type j ---
+        print(f"Solving for household type j={j}...")
+        b_policy_j, c_policy_j, n_policy_j = solve_HH(**solver_args)
+        print(f"Finished solving for type j={j}.")
+
+        # --- Store the results ---
+        b_policy_all[:, j, :, :] = b_policy_j
+        c_policy_all[:, j, :, :] = c_policy_j
+        n_policy_all[:, j, :, :] = n_policy_j
+
+    return b_policy_all, c_policy_all, n_policy_all

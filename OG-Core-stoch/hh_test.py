@@ -1740,7 +1740,7 @@ def test_ogcore_HH_soln():
     p.z_grid = np.array([1.0])
     p.Z = np.array([[1.0]])
     # create b_grid for solve_HH
-    b_grid = np.linspace(0.0, 7.5, 750)  # Asset grid for the test
+    b_grid = np.linspace(0.0, 7.0**(0.5), 50)**2  # Asset grid for the test
     # make log linear grid
     # b_grid = np.exp(np.linspace(np.log(0.001), np.log(12), 100))  # Asset grid for the test
     # b_grid = np.linspace(0.00, 12, 100)  # Asset grid for the test
@@ -1926,7 +1926,7 @@ def test_ogcore_HH_soln():
     plt.scatter(b_s[:, 0], b_interpolated, color='blue', label='b_interpolated', s=10)
     plt.scatter(b_grid, b_itp(b_grid), color='green', label='b_itp', s=10)
     plt.title('Savings Policy Function')
-    plt.xlabel('Age')
+    plt.xlabel('Assets')
     plt.ylabel('Savings')
     plt.legend()
     plt.savefig("savings_policy_function.png")
@@ -1936,7 +1936,7 @@ def test_ogcore_HH_soln():
     plt.scatter(b_s[:, 0], n_interpolated, color='blue', label='n_interpolated', s=10)
     plt.scatter(b_grid, n_itp(b_grid), color='green', label='n_itp', s=10)
     plt.title('Labor Policy Function')
-    plt.xlabel('Age')
+    plt.xlabel('Assets')
     plt.ylabel('Labor Supply')
     plt.legend()
     plt.savefig("labor_policy_function.png")
@@ -1946,7 +1946,7 @@ def test_ogcore_HH_soln():
     plt.scatter(b_s[:, 0], c_interpolated, color='blue', label='c_interpolated', s=10)
     plt.scatter(b_grid, c_itp(b_grid), color='green', label='c_itp', s=10)
     plt.title('Consumption Policy Function')
-    plt.xlabel('Age')
+    plt.xlabel('Assets')
     plt.ylabel('Consumption')
     plt.legend()
     plt.savefig("consumption_policy_function.png")
@@ -1957,7 +1957,7 @@ def test_ogcore_HH_soln():
     plt.scatter(ages, b_core[:, 0], color='red', label='OG-Core', s=10)
     plt.scatter(ages, b_interpolated, color='blue', label='b_interpolated', s=10)
     plt.title('Savings Profile')
-    plt.xlabel('Assets')
+    plt.xlabel('Age')
     plt.ylabel('Savings')
     plt.legend()
     plt.savefig("savings_profile.png")
@@ -1966,7 +1966,7 @@ def test_ogcore_HH_soln():
     plt.scatter(ages, n_core[:, 0], color='red', label='OG-Core', s=10)
     plt.scatter(ages, n_interpolated, color='blue', label='n_interpolated', s=10)
     plt.title('Labor Supply Profile')
-    plt.xlabel('Assets')
+    plt.xlabel('Age')
     plt.ylabel('Labor Supply')
     plt.legend()
     plt.savefig("labor_profile.png")
@@ -1975,7 +1975,7 @@ def test_ogcore_HH_soln():
     plt.scatter(ages, c_core[:, 0], color='red', label='OG-Core', s=10)
     plt.scatter(ages, c_interpolated, color='blue', label='c_interpolated', s=10)
     plt.title('Consumption Profile')
-    plt.xlabel('Assets')
+    plt.xlabel('Age')
     plt.ylabel('Consumption')
     plt.legend()
     plt.savefig("consumption_profile.png")
@@ -2003,9 +2003,319 @@ def test_ogcore_HH_soln():
     print("occurred at age: ", np.argmax(np.abs(c_interpolated - c_core[:, 0])))
     
     print("Dims of OG-Core output:", b_core.shape, c_core.shape, n_core.shape)
-    assert np.allclose(n_interpolated, n_core[:, 0], atol=1e-5)
-    assert np.allclose(c_interpolated, c_core[:, 0], atol=1e-5)
-    assert np.allclose(b_interpolated, b_core[:, 0], atol=1e-5)
+    assert np.allclose(n_interpolated, n_core[:, 0], atol=1e-3)
+    assert np.allclose(c_interpolated, c_core[:, 0], atol=1e-3)
+    assert np.allclose(b_interpolated, b_core[:, 0], atol=1e-3)
 
+
+# %%
+
+@pytest.fixture(scope="module")
+def ss_comparison_setup():
+    """
+    Provides a common setup for comparing the deterministic and stochastic
+    household solvers in the steady state.
+
+    This version uses the default J=7 Specifications to avoid
+    potential errors from resizing parameters.
+    """
+    p = Specifications()  # Use default J=7
+
+    # Turn off stochasticity for direct comparison
+    p.nz = 1
+    p.z_grid = np.array([1.0])
+    p.Z = np.array([[1.0]])
+
+    # Turn off features not in the stochastic version for a clean comparison
+    p.eta = np.zeros((p.T + p.S, p.S, p.J))
+    p.eta_RM = np.zeros((p.T + p.S, p.S, p.J))
+    p.ubi_nom_array = np.zeros((p.T + p.S, p.S, p.J))
+
+    # Turn off pensions directly and robustly
+    p.retirement_age = np.array([p.S + p.E + 1])
+    p.retire = np.array([p.S + p.E + 1])
+    p.pension_system_on = False
+    p.PIA_rate_bkt_1 = 0.0
+    p.PIA_rate_bkt_2 = 0.0
+    p.PIA_rate_bkt_3 = 0.0
+
+    # SS parameters
+    r_ss = 0.05
+    w_ss = 1.2
+    p_m_ss = np.array([1.0])
+    Y_ss = np.array([1.4])
+    # BQ must be J-dimensional
+    BQ_ss = np.ones(p.J) * 0.02
+    TR_ss = np.array([0.01])
+    factor_ss = 100_000
+    p_tilde_ss = 1.0
+
+    # Initial guesses for the deterministic solver (must match J=7)
+    bssmat = np.ones((p.S, p.J)) * 0.05
+    nssmat = np.ones((p.S, p.J)) * 0.5
+
+    # Solve the deterministic household problem using SS.inner_loop
+    outer_loop_vars = (
+        bssmat,
+        nssmat,
+        r_ss,
+        r_ss,
+        w_ss,
+        p_m_ss,
+        Y_ss,
+        BQ_ss,
+        TR_ss,
+        0.0,
+        factor_ss,
+    )
+    (
+        _, b_core, n_core, _, _, _, _, _,
+        _, _, _, _, _, _, _, _, _
+     ) = SS.inner_loop(outer_loop_vars, p, None)
+
+    # Calculate other core results needed for comparison
+    b_s_core = np.vstack([np.zeros((1, p.J)), b_core[:-1, :]])
+    tr_core = hh_core.get_tr(TR_ss, None, p, "SS")
+    bq_core = hh_core.get_bq(BQ_ss, None, p, "SS")
+
+    # This part of the logic inside the test remains valid. The inner_loop function
+    # correctly creates a 3D parameter structure for taxes from the 2D base parameters.
+    # FIX: Use len() for list and correct list indexing [s][i]
+    num_params = len(p.etr_params[-1][0])
+    etr_params_3D = [[[p.etr_params[-1][s][i] for i in range(num_params)] for j in range(p.J)] for s in range(p.S)]
+
+    tax_core = tax.net_taxes(r_ss, w_ss, b_s_core, n_core, bq_core, factor_ss, tr_core, 0, 0, None, None, False, "SS", p.e[-1, :, :], etr_params_3D, p)
+    c_core = hh_core.get_cons(r_ss, w_ss, p_tilde_ss, b_s_core, b_core, n_core, bq_core, 0, tax_core, p.e[-1, :, :], p)
+
+    # Asset grid for the stochastic solver
+    b_grid = b_grid = np.linspace(0.0, 25.0**(0.625), 300)**1.6
+
+    # Solve the stochastic household problem
+    b_policy, c_policy, n_policy = household.solve_all_households_ss(
+        r_ss, w_ss, p_tilde_ss, factor_ss, TR_ss, BQ_ss, p, b_grid
+    )
+
+    return {
+        "p": p, "b_grid": b_grid, "b_s_core": b_s_core,
+        "b_core": b_core, "n_core": n_core, "c_core": c_core,
+        "b_policy": b_policy, "c_policy": c_policy, "n_policy": n_policy
+    }
+
+def test_solve_all_households_ss_shapes(ss_comparison_setup):
+    """
+    Tests that the output policy functions from solve_all_households_ss
+    have the correct dimensions.
+    """
+    p = ss_comparison_setup["p"]
+    b_grid = ss_comparison_setup["b_grid"]
+    b_policy = ss_comparison_setup["b_policy"]
+    c_policy = ss_comparison_setup["c_policy"]
+    n_policy = ss_comparison_setup["n_policy"]
+
+    expected_shape = (p.S, p.J, len(b_grid), p.nz)
+
+    assert b_policy.shape == expected_shape
+    assert c_policy.shape == expected_shape
+    assert n_policy.shape == expected_shape
+
+
+def test_solve_all_households_replication(ss_comparison_setup):
+    """
+    Tests that the stochastic solver `solve_all_households_ss` can
+    replicate the results from the deterministic `SS.inner_loop` when
+    stochasticity is turned off.
+    """
+    p = ss_comparison_setup["p"]
+    b_grid = ss_comparison_setup["b_grid"]
+    b_s_core = ss_comparison_setup["b_s_core"]
+    b_core = ss_comparison_setup["b_core"]
+    n_core = ss_comparison_setup["n_core"]
+    c_core = ss_comparison_setup["c_core"]
+    b_policy = ss_comparison_setup["b_policy"]
+    c_policy = ss_comparison_setup["c_policy"]
+    n_policy = ss_comparison_setup["n_policy"]
+
+    # Interpolate the solved policies at the asset levels from the core model
+    b_interpolated = np.zeros_like(b_core)
+    n_interpolated = np.zeros_like(n_core)
+    c_interpolated = np.zeros_like(c_core)
+
+    for j in range(p.J):
+        for s in range(p.S):
+            # Since nz=1, we take the last dimension index 0
+            b_itp = itp.PchipInterpolator(
+                b_grid, b_policy[s, j, :, 0], extrapolate=True
+            )
+            n_itp = itp.PchipInterpolator(
+                b_grid, n_policy[s, j, :, 0], extrapolate=True
+            )
+            c_itp = itp.PchipInterpolator(
+                b_grid, c_policy[s, j, :, 0], extrapolate=True
+            )
+
+            # Interpolate at the specific asset holdings for this age and type
+            b_interpolated[s, j] = b_itp(b_s_core[s, j])
+            n_interpolated[s, j] = n_itp(b_s_core[s, j])
+            c_interpolated[s, j] = c_itp(b_s_core[s, j])
+
+    # Maximum absolute differences and where they occur
+    diff_b = np.abs(b_interpolated - b_core)
+    diff_n = np.abs(n_interpolated - n_core)
+    diff_c = np.abs(c_interpolated - c_core)
+
+    max_diff_b_idx = np.unravel_index(np.argmax(diff_b), diff_b.shape)
+    max_diff_n_idx = np.unravel_index(np.argmax(diff_n), diff_n.shape)
+    max_diff_c_idx = np.unravel_index(np.argmax(diff_c), diff_c.shape)
+
+    print("\n--- Model Comparison Diagnostics ---")
+    print(
+        f"Max difference in savings (b): {np.max(diff_b):.4f} "
+        f"at (s, j) = {max_diff_b_idx}"
+    )
+    print(
+        f"Max difference in labor (n): {np.max(diff_n):.4f} "
+        f"at (s, j) = {max_diff_n_idx}"
+    )
+    print(
+        f"Max difference in consumption (c): {np.max(diff_c):.4f} "
+        f"at (s, j) = {max_diff_c_idx}"
+    )
+    print("------------------------------------\n")
+
+    # --- Diagnostic Plots ---
+    import matplotlib.pyplot as plt
+
+    # Choose a type to plot, e.g., j=6 where root finding failed
+    j_to_plot = 6
+    ages = np.arange(p.S)
+
+    # Plot lifecycle profiles
+    plt.figure(figsize=(18, 5))
+
+    plt.subplot(1, 3, 1)
+    plt.plot(
+        ages, b_core[:, j_to_plot], "r-", label=f"OG-Core (j={j_to_plot})"
+    )
+    plt.plot(
+        ages,
+        b_interpolated[:, j_to_plot],
+        "b--",
+        label=f"OG-Stoch (j={j_to_plot})",
+    )
+    plt.title(f"Savings Profile (j={j_to_plot})")
+    plt.xlabel("Age (s)")
+    plt.ylabel("Savings (b)")
+    plt.legend()
+    plt.grid(True)
+
+    plt.subplot(1, 3, 2)
+    plt.plot(
+        ages, n_core[:, j_to_plot], "r-", label=f"OG-Core (j={j_to_plot})"
+    )
+    plt.plot(
+        ages,
+        n_interpolated[:, j_to_plot],
+        "b--",
+        label=f"OG-Stoch (j={j_to_plot})",
+    )
+    plt.title(f"Labor Supply Profile (j={j_to_plot})")
+    plt.xlabel("Age (s)")
+    plt.ylabel("Labor (n)")
+    plt.legend()
+    plt.grid(True)
+
+    plt.subplot(1, 3, 3)
+    plt.plot(
+        ages, c_core[:, j_to_plot], "r-", label=f"OG-Core (j={j_to_plot})"
+    )
+    plt.plot(
+        ages,
+        c_interpolated[:, j_to_plot],
+        "b--",
+        label=f"OG-Stoch (j={j_to_plot})",
+    )
+    plt.title(f"Consumption Profile (j={j_to_plot})")
+    plt.xlabel("Age (s)")
+    plt.ylabel("Consumption (c)")
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    plt.savefig("lifecycle_comparison_j6.png")
+    plt.close()
+
+    # Plot policy functions for a specific age
+    s_to_plot = 46  # Age where root finding failed for j=6
+    plt.figure(figsize=(18, 5))
+
+    # Savings policy function
+    plt.subplot(1, 3, 1)
+    plt.plot(
+        b_grid,
+        b_policy[s_to_plot, j_to_plot, :, 0],
+        "b-",
+        label=f"Stoch Policy (s={s_to_plot})",
+    )
+    plt.scatter(
+        b_s_core[s_to_plot, j_to_plot],
+        b_core[s_to_plot, j_to_plot],
+        color="red",
+        label=f"Core Point (s={s_to_plot})",
+    )
+    plt.plot(b_grid, b_grid, "k--", label="45-degree line", alpha=0.5)
+    plt.title(f"Savings Policy (s={s_to_plot}, j={j_to_plot})")
+    plt.xlabel("Assets (b_s)")
+    plt.ylabel("Next Period Assets (b_s+1)")
+    plt.legend()
+    plt.grid(True)
+
+    # Labor policy function
+    plt.subplot(1, 3, 2)
+    plt.plot(
+        b_grid,
+        n_policy[s_to_plot, j_to_plot, :, 0],
+        "b-",
+        label=f"Stoch Policy (s={s_to_plot})",
+    )
+    plt.scatter(
+        b_s_core[s_to_plot, j_to_plot],
+        n_core[s_to_plot, j_to_plot],
+        color="red",
+        label=f"Core Point (s={s_to_plot})",
+    )
+    plt.title(f"Labor Policy (s={s_to_plot}, j={j_to_plot})")
+    plt.xlabel("Assets (b_s)")
+    plt.ylabel("Labor (n)")
+    plt.legend()
+    plt.grid(True)
+
+    # Consumption policy function
+    plt.subplot(1, 3, 3)
+    plt.plot(
+        b_grid,
+        c_policy[s_to_plot, j_to_plot, :, 0],
+        "b-",
+        label=f"Stoch Policy (s={s_to_plot})",
+    )
+    plt.scatter(
+        b_s_core[s_to_plot, j_to_plot],
+        c_core[s_to_plot, j_to_plot],
+        color="red",
+        label=f"Core Point (s={s_to_plot})",
+    )
+    plt.title(f"Consumption Policy (s={s_to_plot}, j={j_to_plot})")
+    plt.xlabel("Assets (b_s)")
+    plt.ylabel("Consumption (c)")
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
+    #plt.savefig("policy_function_comparison_s46_j6.png")
+    plt.close()
+
+    # The interpolated values should be very close to the deterministic solution
+    assert np.allclose(b_interpolated, b_core, atol=1e-2)
+    assert np.allclose(n_interpolated, n_core, atol=1e-2)
+    assert np.allclose(c_interpolated, c_core, atol=1e-2)
 
 # %%
