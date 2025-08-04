@@ -1160,7 +1160,7 @@ def solve_HH(
                     [b_splus1, n_policy[s + 1, b_splus1_index, z_index]]
                 )
                 # Use a try-except block to handle potential root-finding failures
-                res = opt.root(HH_system, initial_guess, args=args, method='df-sane')
+                res = opt.root(HH_system, initial_guess, args=args, method='lm')
                 if res.success:
                     b[b_splus1_index], n[b_splus1_index] = res.x
                 else:  # Handle failure, e.g., by using the guess
