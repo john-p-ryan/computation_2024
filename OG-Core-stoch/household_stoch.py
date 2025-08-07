@@ -34,7 +34,7 @@ def marg_ut_cons(c, sigma):
     """
     if np.ndim(c) == 0:
         c = np.array([c])
-    epsilon = 1e-5
+    epsilon = 0.003
     cvec_cnstr = c < epsilon
     MU_c = np.zeros(c.shape)
     MU_c[~cvec_cnstr] = c[~cvec_cnstr] ** (-sigma)
@@ -157,7 +157,7 @@ def marg_ut_beq(b, sigma, j, p):
     """
     if np.ndim(b) == 0:
         b = np.array([b])
-    epsilon = 0.0001
+    epsilon = 0.001
     bvec_cnstr = b < epsilon
     MU_b = np.zeros(b.shape)
     MU_b[~bvec_cnstr] = p.chi_b[j] * b[~bvec_cnstr] ** (-sigma)
@@ -191,7 +191,7 @@ def inv_mu_c(value, sigma):
         value = np.array([value])
 
     # Include stitching
-    epsilon = 1e-5
+    epsilon = 0.001
     val_cnstr = value < epsilon
     output = np.zeros(value.shape)
     output[~val_cnstr] = value[~val_cnstr] ** (-1 / sigma)
@@ -1291,3 +1291,112 @@ def solve_all_households_ss(r, w, p_tilde, factor, TR, BQ, p, b_grid):
         n_policy_all[:, j, :, :] = n_policy_j
 
     return b_policy_all, c_policy_all, n_policy_all
+
+
+def get_ss_distribution(p, b_policy, b_grid, initial_dist=None):
+    """
+    Calculates the steady-state distribution of agents over age,
+    ability type, assets, and productivity shocks using Young's method.
+
+    This function iterates forward from an initial distribution of
+    newborns, distributing the mass of agents across the asset grid
+    in the next period according to the savings policy function.
+
+    Args:
+        p (Specifications): OG-Core Specifications object containing model parameters.
+        b_policy (Numpy array): The optimal savings policy function,
+            with shape (S, J, nb, nz).
+        b_grid (Numpy array): The grid of asset values, with shape (nb,).
+        initial_dist (Numpy array, optional): The initial distribution
+            of agents at age s=0. It should have shape (J, nb, nz).
+            If None, a default is used where newborns start at the
+            lowest asset level, distributed by ability type according
+            to p.lambdas and by productivity according to the stationary
+            distribution of p.Z. Defaults to None.
+
+    Returns:
+        dist (Numpy array): The steady-state distribution of agents,
+            with shape (S, J, nb, nz). The distribution sums to 1.
+    """
+    # Get key parameters and dimensions from the Specifications object
+    S, J, nz = p.S, p.J, p.nz
+    nb = len(b_grid)
+    lambdas = p.lambdas
+    Z = p.Z
+    b_min, b_max = b_grid[0], b_grid[-1]
+
+    # Initialize the distribution array
+    dist = np.zeros((S, J, nb, nz))
+
+    # Set the initial distribution for newborns (age s=0)
+    if initial_dist is not None:
+        # Use the provided initial distribution
+        # expected_shape = (J, nb, nz)
+        #if initial_dist.shape != expected_shape:
+        #    raise ValueError(
+        #        f"The provided initial_dist has shape {initial_dist.shape} "
+        #        f"but must have shape {expected_shape}."
+        #    )
+        dist[0, :, :, :] = initial_dist
+    else:
+        # if none, newborns start at the lowest asset level
+        # with a stationary distribution of productivity shocks.
+        # Find the eigenvector of p.Z.T corresponding to eigenvalue 1
+        eigenvalues, eigenvectors = np.linalg.eig(Z.T)
+        unit_eigenvalue_idx = np.argmin(np.abs(eigenvalues - 1.0))
+        stationary_dist_z = np.real(eigenvectors[:, unit_eigenvalue_idx])
+
+        # Normalize the eigenvector to sum to 1
+        stationary_dist_z /= stationary_dist_z.sum()
+        for j in range(J):
+            dist[0, j, 0, :] = lambdas[j] * stationary_dist_z
+
+    # Iterate forward through ages to calculate the distribution
+    for s in range(S - 1):
+        for j in range(J):
+            for b_idx in range(nb):
+                for z_idx in range(nz):
+                    # If there's no mass at this point, skip it
+                    if dist[s, j, b_idx, z_idx] == 0:
+                        continue
+
+                    # Get next period's savings from the policy function
+                    b_next = b_policy[s, j, b_idx, z_idx]
+
+                    # Distribute the mass to the next age cohort (s+1)
+                    # based on the productivity shock transition matrix Z
+                    for z_next_idx in range(nz):
+                        mass_to_move = (
+                            dist[s, j, b_idx, z_idx] * Z[z_idx, z_next_idx]
+                        )
+
+                        # Find where b_next falls on the asset grid and
+                        # distribute the mass accordingly.
+                        if b_next <= b_min:
+                            # Entire mass goes to the lowest grid point
+                            dist[s + 1, j, 0, z_next_idx] += mass_to_move
+                        elif b_next >= b_max:
+                            # Entire mass goes to the highest grid point
+                            dist[s + 1, j, -1, z_next_idx] += mass_to_move
+                        else:
+                            # Use linear interpolation (histogram method) to
+                            # split the mass between the two nearest grid points.
+                            # Find the index of the grid point to the right
+                            next_b_idx = np.searchsorted(b_grid, b_next)
+
+                            # Calculate the weight for the higher grid point
+                            weight_high = (b_next - b_grid[next_b_idx - 1]) / (
+                                b_grid[next_b_idx] - b_grid[next_b_idx - 1]
+                            )
+                            # The weight for the lower point is the remainder
+                            weight_low = 1 - weight_high
+
+                            # Update the distribution for the next period
+                            dist[s + 1, j, next_b_idx - 1, z_next_idx] += (
+                                mass_to_move * weight_low
+                            )
+                            dist[s + 1, j, next_b_idx, z_next_idx] += (
+                                mass_to_move * weight_high
+                            )
+
+    return dist
