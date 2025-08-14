@@ -2185,10 +2185,9 @@ def test_solve_all_households_replication(ss_comparison_setup):
     j_to_plot = 6
     ages = np.arange(p.S)
 
-    # Plot lifecycle profiles
-    plt.figure(figsize=(18, 5))
+    # Plot lifecycle profiles for savings
+    plt.figure(figsize=(10, 6))
 
-    plt.subplot(1, 3, 1)
     plt.plot(
         ages, b_core[:, j_to_plot], "r-", label=f"OG-Core (j={j_to_plot})"
     )
@@ -2198,117 +2197,14 @@ def test_solve_all_households_replication(ss_comparison_setup):
         "b--",
         label=f"OG-Stoch (j={j_to_plot})",
     )
-    plt.title(f"Savings Profile (j={j_to_plot})")
+    plt.title(f"Savings Lifecycle Profile (j={j_to_plot})")
     plt.xlabel("Age (s)")
     plt.ylabel("Savings (b)")
     plt.legend()
     plt.grid(True)
-
-    plt.subplot(1, 3, 2)
-    plt.plot(
-        ages, n_core[:, j_to_plot], "r-", label=f"OG-Core (j={j_to_plot})"
-    )
-    plt.plot(
-        ages,
-        n_interpolated[:, j_to_plot],
-        "b--",
-        label=f"OG-Stoch (j={j_to_plot})",
-    )
-    plt.title(f"Labor Supply Profile (j={j_to_plot})")
-    plt.xlabel("Age (s)")
-    plt.ylabel("Labor (n)")
-    plt.legend()
-    plt.grid(True)
-
-    plt.subplot(1, 3, 3)
-    plt.plot(
-        ages, c_core[:, j_to_plot], "r-", label=f"OG-Core (j={j_to_plot})"
-    )
-    plt.plot(
-        ages,
-        c_interpolated[:, j_to_plot],
-        "b--",
-        label=f"OG-Stoch (j={j_to_plot})",
-    )
-    plt.title(f"Consumption Profile (j={j_to_plot})")
-    plt.xlabel("Age (s)")
-    plt.ylabel("Consumption (c)")
-    plt.legend()
-    plt.grid(True)
-
     plt.tight_layout()
-    plt.savefig("lifecycle_comparison_j6.png")
+    #plt.savefig("savings_lifecycle_comparison_j5.png")
     plt.close()
-
-    # Plot policy functions for a specific age
-    s_to_plot = 60  # Age where root finding failed for j=6
-    plt.figure(figsize=(18, 5))
-
-    # Savings policy function
-    plt.subplot(1, 3, 1)
-    plt.plot(
-        b_grid,
-        b_policy[s_to_plot, j_to_plot, :, 0],
-        "b-",
-        label=f"Stoch Policy (s={s_to_plot})",
-    )
-    plt.scatter(
-        b_s_core[s_to_plot, j_to_plot],
-        b_core[s_to_plot, j_to_plot],
-        color="red",
-        label=f"Core Point (s={s_to_plot})",
-    )
-    plt.plot(b_grid, b_grid, "k--", label="45-degree line", alpha=0.5)
-    plt.title(f"Savings Policy (s={s_to_plot}, j={j_to_plot})")
-    plt.xlabel("Assets (b_s)")
-    plt.ylabel("Next Period Assets (b_s+1)")
-    plt.legend()
-    plt.grid(True)
-
-    # Labor policy function
-    plt.subplot(1, 3, 2)
-    plt.plot(
-        b_grid,
-        n_policy[s_to_plot, j_to_plot, :, 0],
-        "b-",
-        label=f"Stoch Policy (s={s_to_plot})",
-    )
-    plt.scatter(
-        b_s_core[s_to_plot, j_to_plot],
-        n_core[s_to_plot, j_to_plot],
-        color="red",
-        label=f"Core Point (s={s_to_plot})",
-    )
-    plt.title(f"Labor Policy (s={s_to_plot}, j={j_to_plot})")
-    plt.xlabel("Assets (b_s)")
-    plt.ylabel("Labor (n)")
-    plt.legend()
-    plt.grid(True)
-
-    # Consumption policy function
-    plt.subplot(1, 3, 3)
-    plt.plot(
-        b_grid,
-        c_policy[s_to_plot, j_to_plot, :, 0],
-        "b-",
-        label=f"Stoch Policy (s={s_to_plot})",
-    )
-    plt.scatter(
-        b_s_core[s_to_plot, j_to_plot],
-        c_core[s_to_plot, j_to_plot],
-        color="red",
-        label=f"Core Point (s={s_to_plot})",
-    )
-    plt.title(f"Consumption Policy (s={s_to_plot}, j={j_to_plot})")
-    plt.xlabel("Assets (b_s)")
-    plt.ylabel("Consumption (c)")
-    plt.legend()
-    plt.grid(True)
-
-    plt.tight_layout()
-    #plt.savefig("policy_function_comparison_s46_j6.png")
-    #plt.close()
-    plt.show()
 
     # The interpolated values should be very close to the deterministic solution
     assert np.allclose(b_interpolated[:,0:5], b_core[:,0:5], atol=1e-2)
