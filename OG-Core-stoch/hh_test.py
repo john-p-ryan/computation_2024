@@ -121,6 +121,8 @@ def test_inv_mu_c(value, sigma, expected):
 
 
 # %%
+# Setup for marg_ut_beq tests
+
 p1 = Specifications()
 p1.chi_b = np.array([1.5, 2.5, 5.0])
 
@@ -2210,5 +2212,3 @@ def test_solve_all_households_replication(ss_comparison_setup):
     assert np.allclose(b_interpolated[:,0:5], b_core[:,0:5], atol=1e-2)
     assert np.allclose(n_interpolated[:,0:5], n_core[:,0:5], atol=1e-2)
     assert np.allclose(c_interpolated[:,0:5], c_core[:,0:5], atol=1e-2)
-
-# %%
