@@ -1,9 +1,11 @@
+# Conda fallback. The canonical environment is pyproject.toml + uv.lock:
+#   uv sync && uv run pytest
 name: hh-dev
 channels:
 - conda-forge
 dependencies:
-- python>=3.7.7, <3.13
-- numpy
+- python>=3.12, <3.14
+- numpy>=1.26, <2.4
 - ipython
 - scipy>=1.7.1
 - pandas>=1.2.5
@@ -14,14 +16,13 @@ dependencies:
 - distributed>=2.30.1
 - paramtools>=0.20.0
 - jupyter
-- pytest>=6.0
+- pytest>=9.1
 - pytest-cov
 - pytest-xdist
-- pylint
 - coverage
 - requests
-- black>=24.1.1
+- ruff
 - pip
 - pip:
   - pygam
-  - ogcore
+  - ogcore==0.20.1

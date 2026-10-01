@@ -44,3 +44,6 @@ docs/build/*
 .vscode/
 *default.profraw
 
+.venv/
+.pytest_cache/
+coverage.xml

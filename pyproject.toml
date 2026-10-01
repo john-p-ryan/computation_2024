@@ -1,0 +1,59 @@
+[project]
+name = "computation-2024"
+version = "0.1.0"
+description = "Prototype OG-Core household solver with idiosyncratic income shocks"
+readme = "README.md"
+requires-python = ">=3.12, <3.14"
+dependencies = [
+    # Pinned to the OG-Core release Phase 1 syncs against. Bump deliberately.
+    "ogcore==0.20.1",
+    "numpy>=1.26,<2.4",
+    "scipy>=1.7.1",
+    "pandas>=1.2.5",
+    "numba",
+    "matplotlib",
+    "dask>=2.30.0",
+    "distributed>=2.30.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+    "pytest-cov",
+    "pytest-xdist",
+    "ruff",
+]
+
+[tool.uv]
+# Research repo, not an installable package: `uv sync` only builds the env.
+package = false
+
+[tool.ruff]
+line-length = 79
+target-version = "py312"
+exclude = ["**/*.ipynb"]
+# Frozen prototypes kept as reference for porting; not linted
+extend-exclude = [
+    "Bequests",
+    "Conesa_Krueger",
+    "DeBacker_Evans_simple",
+    "stripped_model",
+    "OG-Core-stoch/archive",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["F841"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["OG-Core-stoch"]
+filterwarnings = [
+    "ignore:invalid value encountered:RuntimeWarning",
+    "ignore:divide by zero encountered:RuntimeWarning",
+]
+markers = [
+    "local: slow tests run locally and not on GitHub Actions",
+]

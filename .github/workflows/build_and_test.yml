@@ -4,6 +4,7 @@ on:
     paths:
       - '**.yml'
       - '**.toml'
+      - '**.lock'
       - '**.ini'
       - '**.py'
       - '**.json'
@@ -14,6 +15,7 @@ on:
     paths:
       - '**.yml'
       - '**.toml'
+      - '**.lock'
       - '**.ini'
       - '**.py'
       - '**.json'
@@ -26,31 +28,21 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12", "3.13"]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Setup Miniconda using Python ${{ matrix.python-version }}
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
         with:
-          miniconda-version: "latest"
-          auto-update-conda: true
-          activate-environment: hh-dev
-          environment-file: environment.yml
           python-version: ${{ matrix.python-version }}
-          auto-activate-base: false
-      - name: Build
-        shell: bash -l {0}
-        run: |
-          pip install -e .
+      - name: Install dependencies
+        run: uv sync --locked
       - name: Test
-        shell: bash -l {0}
-        working-directory: ./
-        run: |
-          python -m pytest -m "not local" --cov=./ --cov-report=xml
+        run: uv run python -m pytest -m "not local" --cov=./ --cov-report=xml
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && contains(github.repository, 'john-p-ryan/computation_2024')
         uses: codecov/codecov-action@v4
