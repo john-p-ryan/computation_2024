@@ -1461,8 +1461,10 @@ class SolverOptions:
             that node
         maxiter (int): Newton iterations per point
         max_fail_frac (float): raise ``HouseholdSolverError`` if the
-            solver fails at more than this fraction of grid points or
-            endogenous-grid knots; failures are always counted and logged
+            solver fails for more than this share of the population
+            (``solve_all_households_ss``) or, without a distribution, of
+            grid points, or at more than this share of endogenous-grid
+            knots; failures are always counted and logged
         nb (int): asset grid points per type (automatic grids)
         curvature (float): curvature of automatic grids
         grid_margin (float): automatic grids reach this multiple of the
@@ -1488,18 +1490,22 @@ class SolverOptions:
 @dataclass
 class SolverDiagnostics:
     """
-    Counts from one call of the solver. Failures are points where a
+    Counts from one call of the solver. Failures are grid points where a
     solve did not converge; the solver logs them and raises
-    ``HouseholdSolverError`` above ``SolverOptions.max_fail_frac``.
+    ``HouseholdSolverError`` above ``SolverOptions.max_fail_frac`` (by
+    population mass when the distribution is known, see
+    ``solve_all_households_ss``; by count otherwise).
 
     Attributes:
         n_points (int): grid points solved (ages x types x nb x nz)
         n_knots (int): endogenous-grid knots (one per b' node and shock)
         egm_failures (int): knots where inverting the labor FOC and
-            budget constraint failed (the knot is dropped)
+            budget constraint failed (the knot is dropped), including
+            knots where the Euler equation's right-hand side is not
+            finite
         infeasible_knots (int): knots where the Euler equation implies
-            c <= 0, so that b' is never chosen (expected at b' = 0 for
-            old ages with a strong bequest motive)
+            c <= 0, so that b' is never chosen (small b' where the
+            bequest motive is strong)
         dropped_knots (int): valid knots dropped to keep the endogenous
             grid increasing
         static_failures (int): grid points where solving the labor FOC
@@ -1507,6 +1513,10 @@ class SolverDiagnostics:
             c <= 0
         euler_failures (int): grid points where the Euler equation
             error stayed above ``SolverOptions.euler_tol``
+        euler_kinks (int): grid points whose savings sit where the
+            Euler equation's residual jumps from + to - (the labor
+            choice switches, so the value function has a kink there and
+            the Euler equation holds as a pair of inequalities)
         labor_corners (int): grid points with labor supply at a bound,
             where the labor FOC holds as an inequality
         constrained (int): grid points at the borrowing limit (b' = 0)
@@ -1518,8 +1528,12 @@ class SolverDiagnostics:
         max_static_residual (float): largest relative labor FOC residual
         max_euler_residual (float): largest relative Euler equation
             error at grid nodes (against the interpolated Euler
-            consumption)
+            consumption), kinks left out
         failure_ages (list): ages with any failure
+        failed_nodes (Numpy array): grid points that failed (a static or
+            Euler failure), bool (S, M, nb, nz)
+        failed_mass (float): share of the population at failed grid
+            points, once the distribution is known (else None)
         seconds (float): wall time
         backend (str): kernels used
     """
@@ -1531,6 +1545,7 @@ class SolverDiagnostics:
     dropped_knots: int = 0
     static_failures: int = 0
     euler_failures: int = 0
+    euler_kinks: int = 0
     labor_corners: int = 0
     constrained: int = 0
     gap: int = 0
@@ -1539,24 +1554,36 @@ class SolverDiagnostics:
     max_static_residual: float = 0.0
     max_euler_residual: float = 0.0
     failure_ages: list = field(default_factory=list)
+    failed_nodes: np.ndarray = field(default=None, repr=False)
+    failed_mass: float = None
     seconds: float = 0.0
     backend: str = ""
 
     def summary(self):
+        mass = (
+            ""
+            if self.failed_mass is None
+            else f" ({self.failed_mass:.1e} of the population)"
+        )
         return (
             f"{self.n_points} points ({self.backend}, {self.seconds:.2f}s): "
             f"{self.static_failures} static failures, "
             f"{self.egm_failures} EGM failures, "
-            f"{self.euler_failures} Euler failures; "
+            f"{self.euler_failures} Euler failures{mass}; "
             f"{self.constrained} constrained, {self.labor_corners} labor "
             f"corners, {self.gap} gap, {self.extrapolated} extrapolated, "
-            f"{self.direct} solved directly, {self.dropped_knots} dropped "
-            f"knots, {self.infeasible_knots} infeasible knots; max Euler "
-            f"residual {self.max_euler_residual:.1e}"
+            f"{self.direct} solved directly, {self.euler_kinks} kinks, "
+            f"{self.dropped_knots} dropped knots, {self.infeasible_knots} "
+            f"infeasible knots; max Euler residual "
+            f"{self.max_euler_residual:.1e}"
         )
 
     def check(self, options):
-        """Log failures; raise if they exceed the allowed fraction."""
+        """
+        Log failures; raise if they exceed ``options.max_fail_frac``:
+        of the population if ``failed_mass`` is known, else of grid
+        points (and, always, of endogenous-grid knots).
+        """
         point_failures = self.static_failures + self.euler_failures
         if point_failures or self.egm_failures:
             logger.warning(
@@ -1564,9 +1591,15 @@ class SolverDiagnostics:
                 self.summary(),
                 self.failure_ages,
             )
-        too_many = point_failures > options.max_fail_frac * max(
-            self.n_points, 1
-        ) or self.egm_failures > options.max_fail_frac * max(self.n_knots, 1)
+        if self.failed_mass is None:
+            too_many = point_failures > options.max_fail_frac * max(
+                self.n_points, 1
+            )
+        else:
+            too_many = self.failed_mass > options.max_fail_frac
+        too_many |= self.egm_failures > options.max_fail_frac * max(
+            self.n_knots, 1
+        )
         if too_many:
             raise HouseholdSolverError(
                 "Household solver failed at too many points: "
@@ -1727,6 +1760,10 @@ class _NumpyBackend:
         from ogcore.txfunc import get_tax_rates
 
         inp = self.inp
+        if inp.tax_func_type in ("GS", "HSV"):
+            # singular at zero total income: evaluate at a minimum income,
+            # as the kernels do
+            X = np.maximum(X, kernels._MIN_INCOME - Y)
         if kind == "etr":
             out = get_tax_rates(
                 inp.etr_params[s],
@@ -1757,11 +1794,14 @@ class _NumpyBackend:
             )
         return np.broadcast_to(np.asarray(out, dtype=float), X.shape)
 
-    def _raw_derivs(self, s, kind, X, Y):
+    def _raw_derivs(self, s, kind, X, Y, wrt_y=True):
+        # rate and forward-difference derivatives in X (and Y)
         r0 = self._raw(s, kind, X, Y)
         h_x = 1e-6 * np.maximum(np.abs(X), 1.0)
-        h_y = 1e-6 * np.maximum(np.abs(Y), 1.0)
         r_x = self._raw(s, kind, X + h_x, Y)
+        if not wrt_y:
+            return r0, (r_x - r0) / h_x, None
+        h_y = 1e-6 * np.maximum(np.abs(Y), 1.0)
         r_y = self._raw(s, kind, X, Y + h_y)
         return r0, (r_x - r0) / h_x, (r_y - r0) / h_y
 
@@ -1769,7 +1809,8 @@ class _NumpyBackend:
         return self._raw(s, "mtry", X, Y)
 
     def _taxes(self, s, b, n, pa, derivs):
-        # same quantities as household_stoch_kernels._taxes
+        # same quantities as household_stoch_kernels._taxes; derivs is
+        # False, "n" (derivatives in n only) or True
         inp = self.inp
         r, f, tau_p = inp.r[s], inp.factor, inp.tau_payroll[s]
         wez, fi, lnc, knc, fw = (
@@ -1779,8 +1820,9 @@ class _NumpyBackend:
         X = wez * n * f
         Y = r * np.where(pos, b, 0.0) * f
         if derivs:
-            etr, e_x, e_y = self._raw_derivs(s, "etr", X, Y)
-            mtr, m_x, m_y = self._raw_derivs(s, "mtrx", X, Y)
+            wrt_y = derivs is True
+            etr, e_x, e_y = self._raw_derivs(s, "etr", X, Y, wrt_y)
+            mtr, m_x, m_y = self._raw_derivs(s, "mtrx", X, Y, wrt_y)
         else:
             etr = self._raw(s, "etr", X, Y)
             mtr = self._raw(s, "mtrx", X, Y)
@@ -1794,6 +1836,8 @@ class _NumpyBackend:
         if not derivs:
             return T, mtr * adj
         dT_dn = (fi * (e_x * base + etr * (1 - lnc)) + tau_p) * wez
+        if derivs == "n":
+            return T, mtr * adj, dT_dn, m_x * adj * wez * f
         # below zero assets taxes are constant in b; at b = 0 the
         # derivative is the right derivative, as in the kernels
         nonneg = b >= 0
@@ -1831,6 +1875,8 @@ class _NumpyBackend:
         P = b.size
         lo = np.zeros(P)
         hi = np.full(P, lt)
+        lo_seen = np.zeros(P, dtype=bool)
+        hi_seen = np.zeros(P, dtype=bool)
         n = np.clip(n0, 1e-6 * lt, (1 - 1e-6) * lt)
         ok = np.zeros(P, dtype=bool)
         done = np.zeros(P, dtype=bool)
@@ -1845,9 +1891,12 @@ class _NumpyBackend:
             if not upd.any():
                 break
             lo = np.where(upd & (f1 > 0), n, lo)
+            lo_seen |= upd & (f1 > 0)
             hi = np.where(upd & (f1 <= 0), n, hi)
+            hi_seen |= upd & (f1 <= 0)
             tight = upd & (hi - lo < 1e-14 * lt)
-            ok |= tight
+            # a corner, or a root unless f1 jumps
+            ok |= tight & (~(lo_seen & hi_seen) | (np.abs(f1) < 1e-6))
             done |= tight
             upd &= ~tight
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -1860,8 +1909,13 @@ class _NumpyBackend:
     def egm(
         self, s, feasible, b0, n0, bp, b_min, A, rhs, pa, tol, maxiter, nb, nz
     ):
-        """Vectorized household_stoch_kernels._egm_point (no knot
-        continuation: every knot starts from b0, n0)."""
+        """
+        Vectorized household_stoch_kernels._egm_point: the bracketed
+        method only, without the plain Newton stage and the knot
+        continuation, so every knot starts from b0, n0. Where the
+        inversion has several roots it may find another one than the
+        kernels; nodes are checked against the Euler equation anyway.
+        """
         r = self.inp.r[s]
         P = b0.size
         scale2 = 1.0 + np.abs(rhs)
@@ -1892,12 +1946,13 @@ class _NumpyBackend:
             lo = np.where(raise_lo, b, lo)
             lo_ver |= raise_lo
             hi = np.where(active & (H >= 0), np.minimum(hi, b), hi)
-            tight = active & ok & lo_ver & (hi - lo < 1e-15 * (1 + np.abs(lo)))
-            done = conv | tight
+            tight = active & lo_ver & (hi - lo < 1e-15 * (1 + np.abs(lo)))
+            # a root, unless H jumps there (then no knot exists)
+            done = conv | (tight & ok & (np.abs(H) < 1e-8))
             b_out[done], n_out[done] = b[done], n[done]
             res[done] = np.maximum(np.abs(f1), np.abs(H))[done]
             status[done] = kernels.CONVERGED
-            active &= ~done
+            active &= ~(done | tight)
             if not active.any():
                 break
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -1925,7 +1980,7 @@ class _NumpyBackend:
         inp = self.inp
         pai = {k: v[idx] for k, v in pa.items()}
         wez = pai["wez"]
-        T, mtrx, dT_dn, _, dm_dn, _ = self._taxes(s, b[idx], n, pai, True)
+        T, mtrx, dT_dn, dm_dn = self._taxes(s, b[idx], n, pai, "n")
         growth = np.exp(inp.g_y)
         denom = inp.p_tilde[s] + growth * kappa[idx]
         c = (
@@ -1947,31 +2002,31 @@ class _NumpyBackend:
         dF = (dmu * dc * D - mu * dm_dn) * wez / inp.p_tilde[s] - dmdu
         return F, dF, c, np.abs(gain) + np.abs(mdu)
 
-    def static(self, s, n0, b, bp_fix, kappa, pa, tol, maxiter):
-        """Vectorized household_stoch_kernels._static_solve."""
-        inp = self.inp
-        lt = inp.ltilde
-        P = b.size
-        n_floor = kernels.labor_floor(inp.b_ellipse, inp.upsilon, lt)
-        n = np.clip(
-            np.array(n0, dtype=float),
-            n_floor + 1e-4 * (lt - n_floor),
-            (1 - 1e-4) * lt,
+    def _static_search(
+        self, s, idx, n0, lo, hi, lo_seen, hi_seen, n_floor, args, tol, maxiter
+    ):
+        """
+        Vectorized household_stoch_kernels._static_search at points idx
+        (args: b, bp_fix, kappa, pa of all points); lo, hi, lo_seen,
+        hi_seen are per point of idx.
+        """
+        lt = self.inp.ltilde
+        Q = idx.size
+        lo, hi = np.array(lo, dtype=float), np.array(hi, dtype=float)
+        lo_seen, hi_seen = np.array(lo_seen), np.array(hi_seen)
+        n = np.minimum(
+            np.maximum(n0, lo + 1e-4 * (hi - lo)), hi - 1e-4 * (hi - lo)
         )
-        lo = np.full(P, n_floor)
-        hi = np.full(P, lt)
-        lo_seen = np.zeros(P, dtype=bool)
-        hi_seen = np.zeros(P, dtype=bool)
-        status = np.full(P, kernels.NOT_CONVERGED, dtype=np.int64)
+        status = np.full(Q, kernels.NOT_CONVERGED, dtype=np.int64)
         n_out = n.copy()
-        c_out = np.full(P, np.nan)
-        res = np.full(P, np.nan)
-        act = np.arange(P)
+        c_out = np.full(Q, np.nan)
+        res = np.full(Q, np.nan)
+        act = np.arange(Q)
         for it in range(maxiter):
             if act.size == 0:
                 break
             na = n[act]
-            F, dF, c, scale = self._static_F(s, act, na, b, bp_fix, kappa, pa)
+            F, dF, c, scale = self._static_F(s, idx[act], na, *args)
             n_out[act], c_out[act] = na, c
             with np.errstate(invalid="ignore", divide="ignore"):
                 res[act] = np.abs(F) / scale
@@ -2008,10 +2063,110 @@ class _NumpyBackend:
             to_top = ~inside & (F > 0) & ~hi_seen[act]
             to_bottom = ~inside & ~(F > 0) & ~lo_seen[act]
             n_new = np.where(inside, n_new, 0.5 * (lo[act] + hi[act]))
-            n_new = np.where(to_top, lt, n_new)
-            n_new = np.where(to_bottom, n_floor, n_new)
+            n_new = np.where(to_top, hi[act], n_new)
+            n_new = np.where(to_bottom, lo[act], n_new)
             n[act] = n_new
         return n_out, c_out, status, res
+
+    def static(self, s, n0, b, bp_fix, kappa, pa, tol, maxiter):
+        """Vectorized household_stoch_kernels._static_solve."""
+        inp = self.inp
+        lt = inp.ltilde
+        P = b.size
+        n_floor = kernels.labor_floor(inp.b_ellipse, inp.upsilon, lt)
+        args = (b, bp_fix, kappa, pa)
+        every = np.arange(P)
+        no = np.zeros(P, dtype=bool)
+        n, c, st, res = self._static_search(
+            s,
+            every,
+            np.array(n0, dtype=float),
+            np.full(P, n_floor),
+            np.full(P, lt),
+            no,
+            no,
+            n_floor,
+            args,
+            tol,
+            maxiter,
+        )
+        if not inp.analytical_mtrs:
+            return n, c, st, res
+        # several local optima: as household_stoch_kernels._static_point
+        weight = 1.0 + np.exp(inp.g_y) * kappa / inp.p_tilde[s]
+        prefs = (inp.sigma, inp.chi_n[s], inp.b_ellipse, inp.upsilon, lt)
+
+        def utility(sel, n_, c_):
+            return kernels.period_utility_np(n_, c_, weight[sel], *prefs)
+
+        found = (st == kernels.CONVERGED) | (st == kernels.CORNER)
+        u = np.where(found, utility(every, n, c), -np.inf)
+        bottom = found & (st == kernels.CORNER) & (n <= n_floor)
+        idx = np.flatnonzero(found & ~bottom)
+        if idx.size:  # is not working better than the root found?
+            F0, _, c0, _ = self._static_F(
+                s, idx, np.full(idx.size, n_floor), *args
+            )
+            better = np.isfinite(F0) & np.isfinite(c0) & (F0 <= 0)
+            u0 = np.where(better, utility(idx, n_floor, c0), -np.inf)
+            better &= u0 > u[idx]
+            j = idx[better]
+            n[j], c[j], st[j], res[j] = n_floor, c0[better], kernels.CORNER, 0
+            u[j] = u0[better]
+        idx = np.flatnonzero(bottom)
+        if idx.size:  # interior optima where F turns from + to -
+            Q = idx.size
+            n_prev = np.full(Q, n_floor)
+            F_prev = np.full(Q, -1.0)
+            c_prev = c[idx].copy()
+            alive = np.ones(Q, dtype=bool)
+            for k in range(1, kernels.STATIC_SCAN + 1):
+                nk = n_floor + (lt - n_floor) * (k / kernels.STATIC_SCAN) ** 2
+                Fk, _, ck, _ = self._static_F(s, idx, np.full(Q, nk), *args)
+                alive &= np.isfinite(Fk)
+                cross = np.flatnonzero(alive & (F_prev > 0) & (Fk <= 0))
+                if cross.size:
+                    sub = idx[cross]
+                    yes = np.ones(cross.size, dtype=bool)
+                    n2, c2, st2, res2 = self._static_search(
+                        s,
+                        sub,
+                        0.5 * (n_prev[cross] + nk),
+                        n_prev[cross],
+                        np.full(cross.size, nk),
+                        yes,
+                        yes,
+                        n_floor,
+                        args,
+                        tol,
+                        maxiter,
+                    )
+                    u2 = np.where(
+                        st2 == kernels.CONVERGED,
+                        utility(sub, n2, c2),
+                        -np.inf,
+                    )
+                    better = u2 > u[sub]
+                    j = sub[better]
+                    n[j], c[j], st[j] = n2[better], c2[better], st2[better]
+                    res[j], u[j] = res2[better], u2[better]
+                n_prev = np.where(alive, nk, n_prev)
+                F_prev = np.where(alive, Fk, F_prev)
+                c_prev = np.where(alive, ck, c_prev)
+            top = np.flatnonzero(alive & (F_prev > 0) & (n_prev >= lt))
+            if top.size:  # F > 0 up to ltilde: a corner at the top
+                sub = idx[top]
+                u2 = utility(sub, lt, c_prev[top])
+                better = u2 > u[sub]
+                j = sub[better]
+                n[j], c[j], st[j], res[j] = (
+                    lt,
+                    c_prev[top][better],
+                    kernels.CORNER,
+                    0,
+                )
+                u[j] = u2[better]
+        return n, c, st, res
 
     def euler_direct(self, s, euler_c, rows, b, g, n0, pa, tol, maxiter):
         """Vectorized ``kernels._euler_direct_point``."""
@@ -2090,20 +2245,30 @@ class _NumpyBackend:
 
         bp_out = np.full(Q, np.nan)
         n_out = np.array(n0, dtype=float)
-        ok = np.zeros(Q, dtype=bool)
+        outcome = np.full(Q, kernels.EULER_FAILED, dtype=np.int64)
         lim = state == _AT_LIMIT
-        bp_out[lim], n_out[lim], ok[lim] = x_lo[lim], n_lo[lim], True
+        bp_out[lim], n_out[lim] = x_lo[lim], n_lo[lim]
+        outcome[lim] = kernels.EULER_AT_LIMIT
         br = np.flatnonzero(state == _BRACKETED)
-        a, fa = x_lo[br], f_lo[br]
+        a, fa, n_a, c_a = x_lo[br], f_lo[br], n_lo[br], c_lo[br]
         xb, fb, n_b, c_b = x_hi[br], f_hi[br], n_hi[br], c_hi[br]
         live = np.ones(br.size, dtype=bool)
-        good = np.zeros(br.size, dtype=bool)
+        found = np.full(br.size, kernels.EULER_FAILED, dtype=np.int64)
         rtol = kernels.EULER_ROOT_TOL
         for it in range(200):
             size = np.abs(c_b)
             conv = live & (np.abs(fb) <= rtol * size)
             tight = live & (np.abs(xb - a) <= 1e-14 * (1.0 + np.abs(a)))
-            good |= conv | (tight & (np.abs(fb) <= 1e-8 * size))
+            small = np.abs(fb) <= 1e-8 * size
+            found[conv | (tight & small)] = kernels.EULER_ROOT
+            if self.inp.analytical_mtrs:
+                # phi jumps from + to -: a kink of the value function;
+                # keep the end of the bracket with c > 0
+                jump = tight & ~conv & ~small
+                use_a = jump & ~(c_b > 0) & (c_a > 0)
+                xb = np.where(use_a, a, xb)
+                n_b = np.where(use_a, n_a, n_b)
+                found[jump & ((c_b > 0) | use_a)] = kernels.EULER_KINK
             live &= ~(conv | tight)
             L = np.flatnonzero(live)
             if L.size == 0:
@@ -2119,10 +2284,17 @@ class _NumpyBackend:
             opp = f * fb[L] < 0
             a[L] = np.where(opp, xb[L], a[L])
             fa[L] = np.where(opp, fb[L], 0.5 * fa[L])
+            n_a[L] = np.where(opp, n_b[L], n_a[L])
+            c_a[L] = np.where(opp, c_b[L], c_a[L])
             xb[L], fb[L], n_b[L], c_b[L] = x, f, n_x, c_x
+        good = found != kernels.EULER_FAILED
         sel = br[good]
-        bp_out[sel], n_out[sel], ok[sel] = xb[good], n_b[good], True
-        return bp_out, n_out, ok
+        bp_out[sel], n_out[sel], outcome[sel] = (
+            xb[good],
+            n_b[good],
+            found[good],
+        )
+        return bp_out, n_out, outcome
 
 
 # states of the bracket search in _NumpyBackend.euler_direct
@@ -2223,6 +2395,11 @@ def _to_exogenous(b_endo, n_endo, ok, grid):
       their guess is linear interpolation between the knots on either
       side of the limit.
 
+    A type and shock with fewer than two usable knots at or above the
+    limit (the inversion failed for the others, as at savings levels
+    far above where anyone is when the grid is too large) has all its
+    nodes solved directly, with b' = b as the guess.
+
     Returns:
         b_next (Numpy array): savings at grid nodes, (M, nb, nz)
         n_guess (Numpy array): labor supply guess, (M, nb, nz)
@@ -2237,11 +2414,17 @@ def _to_exogenous(b_endo, n_endo, ok, grid):
     y_n = n_endo.transpose(0, 2, 1).reshape(M * nz, nb)
     b_min = y_b[:, :1]
     use = keep & (x >= b_min)
-    if (use.sum(axis=1) < 2).any():
-        raise HouseholdSolverError(
-            "Fewer than two usable endogenous-grid knots at or above the "
-            "borrowing limit for some type and shock"
-        )
+    few = use.sum(axis=1) < 2  # rows solved directly at every node
+    if few.any():
+        # placeholder knots (b' = b) so that every row can be
+        # interpolated; their results are replaced below
+        x = x.copy()
+        y_n = y_n.copy()
+        keep[few] = False
+        use[few] = False
+        use[few, :2] = keep[few, :2] = True
+        x[few, :2] = y_b[few, :2]
+        y_n[few, :2] = np.nan
     out = kernels.pchip_many(x, np.stack([y_b, y_n]), use, y_b)
     b_next, n_guess = out[0], out[1]
     rows = np.arange(M * nz)
@@ -2266,11 +2449,17 @@ def _to_exogenous(b_endo, n_endo, ok, grid):
             v_hi = vals[rows, first][:, None]
             guess = np.where(has_lo[:, None], v_lo + t * (v_hi - v_lo), v_hi)
             target[gap] = np.broadcast_to(guess, target.shape)[gap]
+    extrapolated = y_b > x[rows, last][:, None]
+    if few.any():
+        constrained[few] = extrapolated[few] = False
+        gap[few] = True
+        b_next[few] = y_b[few]
+        n_guess[few] = np.nan
     counts = {
         "constrained": int(constrained.sum()),
         "gap": int(gap.sum()),
-        "extrapolated": int((y_b > x[rows, last][:, None]).sum()),
-        "dropped": int((okf & ~keep).sum()),
+        "extrapolated": int(extrapolated.sum()),
+        "dropped": int((okf & ~keep & ~few[:, None]).sum()),
     }
 
     def back(a):
@@ -2348,7 +2537,12 @@ def _solve_euler_direct(
 
     Returns:
         bp, n (Numpy arrays): savings and labor at the nodes
-        ok (Numpy array): bool, where the Euler equation was solved
+        outcome (Numpy array): ``kernels.EULER_ROOT`` (the Euler
+            equation holds), ``EULER_AT_LIMIT`` (the borrowing
+            constraint binds), ``EULER_KINK`` (savings where phi jumps
+            from + to -: the labor choice switches and the value
+            function has a kink, so the Euler equation holds as a pair
+            of inequalities) or ``EULER_FAILED``
     """
     nz = euler_c.nz
     nb = euler_c.x.shape[1]
@@ -2399,7 +2593,63 @@ def _euler_residual(c, c_e, bp):
     return np.where(bp > 0, interior, at_limit)
 
 
-def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
+def _validate_inputs(inp, grid, z_grid, z_trans, options):
+    """Fail early, with the input's name, on inputs the solver cannot use."""
+    for name in (
+        "r",
+        "w",
+        "p_tilde",
+        "tau_payroll",
+        "chi_n",
+        "h_wealth",
+        "m_wealth",
+        "p_wealth",
+        "e",
+        "rho",
+        "beta",
+        "chi_b",
+        "income_filer",
+        "wealth_filer",
+        "labor_nc",
+        "capital_nc",
+    ):
+        if not np.isfinite(np.asarray(getattr(inp, name), dtype=float)).all():
+            raise ValueError(f"inputs.{name} contains NaN or inf")
+    if not np.isfinite(inp.other_income()).all():
+        raise ValueError(
+            "Income other than labor and capital income (bequests, "
+            "remittances, transfers, UBI, pensions) contains NaN or inf"
+        )
+    for name in ("etr_params", "mtrx_params", "mtry_params"):
+        try:
+            params = np.asarray(getattr(inp, name), dtype=float)
+        except (TypeError, ValueError):
+            continue  # nonparametric tax functions
+        if not np.isfinite(params).all():
+            raise ValueError(f"inputs.{name} contains NaN or inf")
+    if not np.isfinite(grid).all():
+        raise ValueError("The asset grid contains NaN or inf")
+    if not (np.isfinite(z_grid).all() and (z_grid > 0).all()):
+        raise ValueError("Productivity levels z_grid must be positive")
+    if (
+        z_trans.shape != (z_grid.size, z_grid.size)
+        or not np.isfinite(z_trans).all()
+        or (z_trans < 0).any()
+        or not np.allclose(z_trans.sum(axis=1), 1.0, rtol=0, atol=1e-10)
+    ):
+        raise ValueError(
+            "z_trans must be a transition matrix matching z_grid (rows "
+            "of nonnegative probabilities summing to 1)"
+        )
+    if not options.euler_tol >= 100 * kernels.EULER_ROOT_TOL:
+        raise ValueError(
+            "SolverOptions.euler_tol must be at least "
+            f"{100 * kernels.EULER_ROOT_TOL:g} (the direct Euler solve "
+            f"converges to {kernels.EULER_ROOT_TOL:g})"
+        )
+
+
+def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None, check=True):
     """
     Solve the life-cycle problem of a batch of types by backward
     induction with the endogenous grid method.
@@ -2435,6 +2685,11 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
         z_grid (array_like): productivity levels, (nz,)
         z_trans (array_like): shock transition matrix, (nz, nz)
         options (SolverOptions): solver settings
+        check (bool): raise ``HouseholdSolverError`` if failures exceed
+            ``options.max_fail_frac`` of grid points; with False the
+            caller checks (``solve_all_households_ss`` weighs failures
+            by the population at the failed nodes). Policies with NaN
+            always raise.
 
     Returns:
         b_policy (Numpy array): savings b' chosen, (S, M, nb, nz)
@@ -2445,6 +2700,7 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
 
     Raises:
         HouseholdSolverError: failures above ``options.max_fail_frac``
+        ValueError: unusable inputs
     """
     options = options or SolverOptions()
     t0 = time.perf_counter()
@@ -2458,6 +2714,7 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
         grid = np.tile(grid, (M, 1))
     if grid.shape[0] != M:
         raise ValueError(f"b_grid has {grid.shape[0]} rows for {M} types")
+    _validate_inputs(inp, grid, z_grid, z_trans, options)
     if (np.diff(grid, axis=1) <= 0).any():
         raise ValueError("Asset grids must be strictly increasing")
     if not (grid[:, 0] == 0.0).all():
@@ -2472,6 +2729,7 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
     c_pol = np.empty((S,) + shape)
     n_pol = np.empty((S,) + shape)
     diag = SolverDiagnostics(backend=backend.name)
+    failed = np.zeros((S,) + shape, dtype=bool)
     b3 = np.broadcast_to(grid[:, :, None], shape)
     b_flat = _flat(b3, shape)
     b_min = _flat(grid[:, :1, None], shape)  # borrowing limit by type
@@ -2485,6 +2743,20 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
     tol, maxiter = options.tol, options.maxiter
     lt = inp.ltilde
 
+    def finish_age(s, b_next, n, c):
+        b_pol[s] = b_next.reshape(shape)
+        n_pol[s] = n.reshape(shape)
+        c_pol[s] = c.reshape(shape)
+        if not (
+            np.isfinite(b_pol[s]).all()
+            and np.isfinite(c_pol[s]).all()
+            and np.isfinite(n_pol[s]).all()
+        ):
+            raise HouseholdSolverError(
+                f"Household policies at age {s} contain NaN or inf: "
+                + diag.summary()
+            )
+
     # last age: bequest FOC, MU(c) / p_tilde = rho e^{-sigma g_y} chi_b
     # b'^{-sigma}, i.e. b' = kappa c
     s = S - 1
@@ -2496,10 +2768,9 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
     n, c, st, res = backend.static(
         s, np.full(P, 0.3 * lt), b_flat, zeros, kappa_flat, pa, tol, maxiter
     )
-    _record_static(diag, s, st, res, c)
-    n_pol[s] = n.reshape(shape)
-    c_pol[s] = c.reshape(shape)
-    b_pol[s] = kappa[:, None, None] * c_pol[s]
+    good = _record_static(diag, s, st, res, c)
+    failed[s] = ~good.reshape(shape)
+    finish_age(s, kappa_flat * c, n, c)
 
     mu_c_zero = kernels.mu_c(np.zeros(1), inp.sigma)[0]
     growth = np.exp(inp.g_y)
@@ -2508,7 +2779,8 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
         v = _value_of_savings(
             inp, backend, s, b3, n_pol[s + 1], c_pol[s + 1], z_grid, z_trans
         )
-        feasible = v < mu_c_zero  # else c <= 0: b' is never optimal
+        finite_v = np.isfinite(v)
+        feasible = finite_v & (v < mu_c_zero)  # else c <= 0: never chosen
         c_E = kernels.inv_mu_c(v, inp.sigma)
         euler_c = _EulerConsumption(grid, c_E)
         # 2. assets and labor at which (c, b') is optimal
@@ -2537,9 +2809,9 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
         )
         feas = feasible.ravel()
         ok = feas & (st == kernels.CONVERGED)
-        n_fail = int((feas & ~ok).sum())
+        n_fail = int((feas & ~ok).sum()) + int((~finite_v).sum())
         diag.egm_failures += n_fail
-        diag.infeasible_knots += int((~feas).sum())
+        diag.infeasible_knots += int((finite_v & ~feasible).sum())
         _record_failures(diag, s, n_fail)
         # 3. savings at the grid nodes
         b_next, n_guess, gap, counts = _to_exogenous(
@@ -2550,12 +2822,15 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
         diag.dropped_knots += counts["dropped"]
         bn = b_next.ravel()
         ng = np.where(np.isfinite(n_guess.ravel()), n_guess.ravel(), 0.3 * lt)
+        kink = np.zeros(P, dtype=bool)
         idx = np.flatnonzero(gap.ravel())
         if idx.size:
-            bp, n_d, ok_d = _solve_euler_direct(
+            bp, n_d, out = _solve_euler_direct(
                 backend, s, euler_c, idx, bn[idx], ng[idx], pa, options
             )
+            ok_d = out != kernels.EULER_FAILED
             bn[idx[ok_d]], ng[idx[ok_d]] = bp[ok_d], n_d[ok_d]
+            kink[idx[out == kernels.EULER_KINK]] = True
             diag.direct += int(ok_d.sum())
         # 4. labor supply and consumption at the grid nodes
         n, c, st, res = backend.static(
@@ -2563,13 +2838,14 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
         )
         # 5. the Euler equation at every node
         resid = _euler_residual(c, euler_c(rows, bn), bn)
-        flag = ~_static_ok(st, c) | ~(np.abs(resid) <= options.euler_tol)
-        idx = np.flatnonzero(flag)
+        missed = ~(np.abs(resid) <= options.euler_tol) & ~kink
+        idx = np.flatnonzero(~_static_ok(st, c) | missed)
         if idx.size:
             n_start = np.where(_static_ok(st, c)[idx], n[idx], ng[idx])
-            bp, n_d, ok_d = _solve_euler_direct(
+            bp, n_d, out = _solve_euler_direct(
                 backend, s, euler_c, idx, bn[idx], n_start, pa, options
             )
+            ok_d = out != kernels.EULER_FAILED
             j = idx[ok_d]
             if j.size:
                 bn[j] = bp[ok_d]
@@ -2586,34 +2862,30 @@ def solve_lifecycle(inp, b_grid, z_grid, z_trans, options=None):
                 resid[j] = _euler_residual(
                     c[j], euler_c(rows[j], bn[j]), bn[j]
                 )
+                kink[j] = out[ok_d] == kernels.EULER_KINK
                 diag.direct += int(j.size)
         good = _record_static(diag, s, st, res, c)
-        missed = good & ~(np.abs(resid) <= options.euler_tol)
+        missed = good & ~kink & ~(np.abs(resid) <= options.euler_tol)
         diag.euler_failures += int(missed.sum())
+        diag.euler_kinks += int((good & kink).sum())
         _record_failures(diag, s, int(missed.sum()))
-        if good.any():
+        regular = good & ~kink
+        if regular.any():
             diag.max_euler_residual = max(
-                diag.max_euler_residual, float(np.max(np.abs(resid[good])))
+                diag.max_euler_residual,
+                float(np.max(np.abs(resid[regular]))),
             )
         diag.constrained += int((bn == b_min).sum())
-        b_pol[s] = bn.reshape(shape)
-        n_pol[s] = n.reshape(shape)
-        c_pol[s] = c.reshape(shape)
+        failed[s] = (~good | missed).reshape(shape)
+        finish_age(s, bn, n, c)
 
     diag.n_points = S * P
     diag.n_knots = (S - 1) * P
     diag.failure_ages = sorted(diag.failure_ages)
+    diag.failed_nodes = failed
     diag.seconds = time.perf_counter() - t0
-    if not (
-        np.isfinite(b_pol).all()
-        and np.isfinite(c_pol).all()
-        and np.isfinite(n_pol).all()
-    ):
+    if check:
         diag.check(options)
-        raise HouseholdSolverError(
-            "Household policies contain NaN or inf: " + diag.summary()
-        )
-    diag.check(options)
     logger.debug("solve_lifecycle: %s", diag.summary())
     return b_pol, c_pol, n_pol, diag
 
@@ -2888,7 +3160,9 @@ class HouseholdSolution:
         inputs (LifecycleInputs): everything the households faced
         diagnostics (SolverDiagnostics): solver counts
         dist_diagnostics (dict): distribution checks
-        iterations (dict): rounds of grid resizing and pension updates
+        iterations (dict): rounds of grid resizing ('grid', and
+            'grid_settled' False if the grids did not settle) and of
+            pension updates ('pension')
     """
 
     b_policy: np.ndarray
@@ -2916,12 +3190,17 @@ class HouseholdSolution:
         )
 
 
-def _support_top(dist, b_policy, grid, omega_j, mass_tol):
-    """Highest savings chosen at nodes with mass, by type."""
+def _support_top(dist, b_policy, grid, omega_j, mass_tol, failed=None):
+    """
+    Highest savings chosen at nodes with mass, by type, leaving out
+    nodes where the solver failed (their savings are not reliable).
+    """
     S, M, nb, nz = dist.shape
     top = np.zeros(M)
     for m in range(M):
         massive = dist[:, m] > mass_tol * omega_j[m]
+        if failed is not None:
+            massive &= ~failed[:, m]
         if massive.any():
             top[m] = max(b_policy[:, m][massive].max(), 0.0)
             node_top = grid[m][massive.any(axis=(0, 2))].max()
@@ -2957,8 +3236,15 @@ def solve_all_households_ss(
 
     Asset grids: ``b_grid`` ((nb,) or (J, nb)) is used as given. If None,
     each type gets a grid of ``options.nb`` nodes (``make_asset_grid``)
-    whose top is resized until it is about ``options.grid_margin`` times
-    the highest savings chosen where the distribution has mass.
+    whose top is resized until it is within a factor 1.25 of
+    ``options.grid_margin`` times the highest savings chosen where the
+    distribution has mass, for at most ``options.grid_resize_iter``
+    rounds (a warning is logged if the grids have not settled).
+
+    Failures: solver failures count by the population at the failed
+    grid points; ``HouseholdSolverError`` is raised when that share
+    exceeds ``options.max_fail_frac`` (failures where nobody is, for
+    example at nodes no household reaches, are logged only).
 
     Args:
         r_p (scalar): return on the household portfolio
@@ -3017,15 +3303,18 @@ def solve_all_households_ss(
 
     def solve(inp, grids):
         b_pol, c_pol, n_pol, diag = solve_lifecycle(
-            inp, grids, z_grid, z_trans, options
+            inp, grids, z_grid, z_trans, options, check=False
         )
         dist, dd = get_ss_distribution(
             p, b_pol, grids, z_dist0=z_dist0, return_diagnostics=True
         )
+        diag.failed_mass = float(
+            dist[diag.failed_nodes].sum() / max(dist.sum(), 1e-300)
+        )
         return b_pol, c_pol, n_pol, diag, dist, dd
 
     inp = inputs(pens)
-    iterations = {"grid": 0, "pension": 0}
+    iterations = {"grid": 0, "pension": 0, "grid_settled": True}
     if b_grid is not None:
         grids = np.asarray(b_grid, dtype=float)
         if grids.ndim == 1:
@@ -3044,11 +3333,27 @@ def solve_all_households_ss(
             result = solve(inp, grids)
             iterations["grid"] = it
             top = _support_top(
-                result[4], result[0], grids, omega_j, options.mass_tol
+                result[4],
+                result[0],
+                grids,
+                omega_j,
+                options.mass_tol,
+                result[3].failed_nodes,
             )
             target = options.grid_margin * np.maximum(top, 1e-3)
             off = np.abs(np.log(b_max / target)) > np.log(1.25)
-            if not off.any() or it == options.grid_resize_iter:
+            if not off.any():
+                break
+            if it == options.grid_resize_iter:
+                iterations["grid_settled"] = False
+                logger.warning(
+                    "Asset grids did not settle in %d rounds: grid tops %s, "
+                    "targets %s (types %s)",
+                    options.grid_resize_iter,
+                    np.array2string(b_max[off], precision=3),
+                    np.array2string(target[off], precision=3),
+                    np.flatnonzero(off),
+                )
                 break
             b_max = np.where(off, target, b_max)
 
@@ -3075,6 +3380,7 @@ def solve_all_households_ss(
                 "Pension fixed point did not converge: change %.2e", change
             )
     b_pol, c_pol, n_pol, diag, dist, dd = result
+    diag.check(options)
     return HouseholdSolution(
         b_policy=b_pol,
         c_policy=c_pol,
@@ -3147,6 +3453,27 @@ def _static_at(inp, backend, s, b, b_next, zs, n0, options):
     return n.reshape(shape), c.reshape(shape)
 
 
+def _interp_series(grid, values, queries):
+    """
+    Monotone cubic interpolation, as in the solver, of each (type,
+    shock) series of values (M, nb, nz) at queries (M, Q, nz, ...):
+    queries[m, :, iz, ...] are evaluated on series (m, iz).
+    """
+    M, nb, nz = values.shape
+    x = np.repeat(grid, nz, axis=0)
+    y = values.transpose(0, 2, 1).reshape(M * nz, nb)
+    rows = np.broadcast_to(
+        (np.arange(M)[:, None] * nz + np.arange(nz)[None, :]).reshape(
+            (M, 1, nz) + (1,) * (queries.ndim - 3)
+        ),
+        queries.shape,
+    )
+    out = kernels.pchip_query(
+        x, y, np.ones(x.shape, dtype=bool), rows.ravel(), queries.ravel()
+    )
+    return out.reshape(queries.shape)
+
+
 def euler_errors(sol, ages=None, options=None):
     r"""
     Euler equation errors between grid nodes (Judd 1992). At the
@@ -3154,14 +3481,17 @@ def euler_errors(sol, ages=None, options=None):
     interpolating the savings policy as the solver does; labor and
     consumption then solve the labor FOC and budget constraint exactly,
     at age s and, for each next shock z', at age s + 1 (with b'' from
-    the age-(s + 1) savings policy). The error is
+    the age-(s + 1) savings policy), starting from the interpolated
+    labor policy. The error is
 
     .. math::
         \frac{c^{Euler}}{c} - 1,
 
     where :math:`c^{Euler}` is the consumption the savings Euler
     equation implies. At the borrowing limit the Euler equation is an
-    inequality, so only :math:`c > c^{Euler}` counts.
+    inequality, so only :math:`c > c^{Euler}` counts. Midpoints where a
+    within-period solve fails have a NaN error, counted separately and
+    treated as infinite in the maxima and shares.
 
     Args:
         sol (HouseholdSolution): solution to check
@@ -3169,10 +3499,18 @@ def euler_errors(sol, ages=None, options=None):
         options (SolverOptions): settings for the within-period solves
 
     Returns:
-        dict: 'errors' (S - 1, J, nb - 1, nz), NaN for unchecked ages;
-        'max' over all midpoints checked; 'max_with_mass' over
-        midpoints next to a node with mass in ``sol.dist``; 'b' the
-        midpoints (J, nb - 1)
+        dict with
+        'errors' (S - 1, J, nb - 1, nz): NaN for unchecked ages;
+        'max': over all midpoints checked;
+        'max_with_mass': over midpoints next to a node with any mass in
+        ``sol.dist``;
+        'mean_with_mass': population-weighted mean (each midpoint
+        weighted by the mean mass at its two nodes);
+        'share_above': {threshold: population share at midpoints with
+        a larger error} for thresholds 1e-4, 1e-3 and 1e-2;
+        'nan', 'nan_with_mass': midpoints whose error could not be
+        computed;
+        'b': the midpoints (J, nb - 1)
     """
     options = options or SolverOptions()
     inp = sol.inputs
@@ -3184,39 +3522,35 @@ def euler_errors(sol, ages=None, options=None):
     shape = (M, nb - 1, nz)
     b_q = np.ascontiguousarray(np.broadcast_to(b_mid[:, :, None], shape))
     errors = np.full((S - 1, M, nb - 1, nz), np.nan)
+    checked = np.zeros((S - 1, M, nb - 1, nz), dtype=bool)
     ages = range(S - 1) if ages is None else ages
     for s in ages:
+        checked[s] = True
         # age s: savings by interpolation, then labor and consumption
-        b_next = np.empty(shape)
-        n_guess = np.empty(shape)
-        for iz in range(nz):
-            b_next[:, :, iz] = _interp_policy(
-                grid, sol.b_policy[s, :, :, iz], b_q[:, :, iz]
-            )
-            n_guess[:, :, iz] = _interp_policy(
-                grid, sol.n_policy[s, :, :, iz], b_q[:, :, iz]
-            )
+        b_next = _interp_series(grid, sol.b_policy[s], b_q)
+        n_guess = _interp_series(grid, sol.n_policy[s], b_q)
         n, c = _static_at(
             inp, backend, s, b_q, b_next, z_grid, n_guess, options
         )
-        # age s + 1 in each next shock z'
+        # age s + 1 in each next shock z': series (m, z') at b_next
+        b_next_z = np.ascontiguousarray(
+            np.broadcast_to(b_next[:, :, None, :], (M, nb - 1, nz, nz))
+        )  # [m, i, z', z]: savings from shock z, evaluated on series z'
+        n_guess1 = _interp_series(grid, sol.n_policy[s + 1], b_next_z)
+        if s + 1 < S - 1:
+            b_next2 = _interp_series(grid, sol.b_policy[s + 1], b_next_z)
         V = np.empty(shape + (nz,))
         for izp in range(nz):
             zs = np.full(nz, z_grid[izp])
-            b_next2 = None
-            n_guess1 = np.empty(shape)
-            if s + 1 < S - 1:
-                b_next2 = np.empty(shape)
-            for iz in range(nz):
-                if b_next2 is not None:
-                    b_next2[:, :, iz] = _interp_policy(
-                        grid, sol.b_policy[s + 1, :, :, izp], b_next[:, :, iz]
-                    )
-                n_guess1[:, :, iz] = _interp_policy(
-                    grid, sol.n_policy[s + 1, :, :, izp], b_next[:, :, iz]
-                )
             n1, c1 = _static_at(
-                inp, backend, s + 1, b_next, b_next2, zs, n_guess1, options
+                inp,
+                backend,
+                s + 1,
+                b_next,
+                None if s + 1 == S - 1 else b_next2[:, :, izp, :],
+                zs,
+                n_guess1[:, :, izp, :],
+                options,
             )
             pa1 = _point_arrays(inp, s + 1, shape, zs)
             X = pa1["wez"] * n1.ravel() * inp.factor
@@ -3248,16 +3582,32 @@ def euler_errors(sol, ages=None, options=None):
             * (rho * mu_b + beta * (1 - rho) * EV)
         )
         c_euler = kernels.inv_mu_c(v, inp.sigma)
-        err = c_euler / c - 1
-        at_limit = b_next <= grid[:, :1, None] + 1e-12
-        errors[s] = np.where(at_limit, np.maximum(c / c_euler - 1, 0.0), err)
-    with_mass = (sol.dist[:-1, :, 1:, :] + sol.dist[:-1, :, :-1, :]) > 0
-    abs_err = np.abs(errors)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            err = c_euler / c - 1
+            at_limit = b_next <= grid[:, :1, None] + 1e-12
+            errors[s] = np.where(
+                at_limit, np.maximum(c / c_euler - 1, 0.0), err
+            )
+    weight = 0.5 * (sol.dist[:-1, :, 1:, :] + sol.dist[:-1, :, :-1, :])
+    weight = np.where(checked, weight, 0.0)
+    with_mass = checked & (weight > 0)
+    nan = checked & np.isnan(errors)
+    abs_err = np.where(nan, np.inf, np.abs(errors))  # NaN: failed solve
+    total = max(weight.sum(), 1e-300)
+    finite = checked & ~nan
     return {
         "errors": errors,
-        "max": float(np.nanmax(abs_err)),
-        "max_with_mass": float(
-            np.nanmax(np.where(with_mass, abs_err, np.nan))
+        "max": float(np.max(abs_err, where=checked, initial=0.0)),
+        "max_with_mass": float(np.max(abs_err, where=with_mass, initial=0.0)),
+        "mean_with_mass": float(
+            (weight * np.where(finite, abs_err, 0.0)).sum()
+            / max(weight[finite].sum(), 1e-300)
         ),
+        "share_above": {
+            t: float(weight[abs_err > t].sum() / total)
+            for t in (1e-4, 1e-3, 1e-2)
+        },
+        "nan": int(nan.sum()),
+        "nan_with_mass": int((nan & with_mass).sum()),
         "b": b_mid,
     }

@@ -116,8 +116,7 @@ def _variant(name):
     elif name != "DEP":
         form, analytical = name.split()
         params = {
-            "GS": [0.35, 0.9, 2e-5],
-            "HSV": [5.0, 0.15],
+            **TAX_PARAMS,
             "DEP_totalinc": [2e-11, 3e-6, 0.30, 0.05, 0.01, -0.02],
         }[form]
         _set_tax_functions(p, form, params, analytical == "analytical")
@@ -162,6 +161,77 @@ def test_ogcore_focs_hold(name):
     )
     for j, (savings, labor) in worst.items():
         assert savings < FOC_TOL and labor < FOC_TOL, (j, savings, labor)
+
+
+TAX_PARAMS = {
+    "GS": [0.35, 0.9, 2e-5],
+    "HSV": [5.0, 0.15],
+}
+
+
+@pytest.mark.parametrize(
+    "form,analytical",
+    [("GS", False), ("HSV", True)],
+    ids=["GS", "HSV analytical"],
+)
+def test_five_states_other_tax_functions(form, analytical):
+    """
+    Five shock states with other tax functions: no failures, Euler
+    errors between nodes below 1e-4 wherever households are.
+    """
+    p = default_specs()
+    household.set_ar1_shock_process(p, 5, 0.9, 0.15)
+    _set_tax_functions(p, form, TAX_PARAMS[form], analytical)
+    sol = household.solve_all_households_ss(
+        R, W, [1.0], BQ, TR, FACTOR, p, theta=np.full(p.J, 0.3)
+    )
+    d = sol.diagnostics
+    print(d.summary())
+    assert d.static_failures == d.egm_failures == d.euler_failures == 0
+    errors = household.euler_errors(sol)
+    print({k: v for k, v in errors.items() if k not in ("errors", "b")})
+    assert errors["nan_with_mass"] == 0
+    assert errors["max_with_mass"] < 1e-4
+
+
+@pytest.mark.parametrize("form", ["GS", "HSV"])
+def test_numpy_backend_zero_income(form):
+    """
+    GS and HSV are singular at zero income, which households with no
+    assets reach when the labor floor is 0 (upsilon < 2). The numpy
+    backend evaluates them at a minimum income, as the kernels do, and
+    the two backends agree.
+    """
+    p = default_specs()
+    household.set_ar1_shock_process(p, 3, 0.9, 0.15)
+    p.upsilon = 1.5
+    _set_tax_functions(p, form, TAX_PARAMS[form], False)
+    hh = household.household_inputs_ss(p, R, W, [1.0], BQ, TR, FACTOR)
+    inp = household.lifecycle_inputs_ss(
+        p,
+        R,
+        W,
+        hh["p_tilde"],
+        FACTOR,
+        hh["bq"],
+        hh["rm"],
+        hh["tr"],
+        hh["ubi"],
+        0.0,
+        hh["c_min_exp"],
+        js=[0, 3],
+    )
+    grid = household.make_asset_grid(15.0, 30, 4.0)
+    out = {}
+    for backend in ("numba", "numpy"):
+        options = household.SolverOptions(backend=backend)
+        out[backend] = household.solve_lifecycle(
+            inp, grid, p.z_grid, p.z_trans, options
+        )
+        d = out[backend][3]
+        assert d.static_failures == d.egm_failures == d.euler_failures == 0
+    for k in range(3):
+        assert np.allclose(out["numba"][k], out["numpy"][k], atol=1e-8)
 
 
 # %%

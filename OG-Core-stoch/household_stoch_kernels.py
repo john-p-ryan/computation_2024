@@ -13,9 +13,10 @@ Every kernel the solver calls has a numpy fallback:
 
 * utilities, interpolation and the distribution have plain numpy/scipy
   versions (``*_np``), used when numba is unavailable or disabled;
-* the tax functions fall back to OG-Core's own ``tax.ETR_income`` and
-  ``tax.MTR_income`` (see ``household_stoch``), which also covers the
-  nonparametric "mono"/"mono2D" tax functions that numba cannot compile.
+* the tax functions fall back to OG-Core's own
+  ``ogcore.txfunc.get_tax_rates`` (``household_stoch._NumpyBackend``),
+  which also covers the nonparametric "mono"/"mono2D" tax functions that
+  numba cannot compile.
 
 Set the environment variable ``OGCORE_STOCH_DISABLE_NUMBA=1`` (or the
 module attribute ``USE_NUMBA = False``) to force the numpy path.
@@ -811,8 +812,9 @@ def _labor_given_assets(
 ):
     """
     Labor supply solving the labor FOC f1(b, n) = 0 at given assets b.
-    f1 = 1 - tau_p - MTRx - MDU(n)/A falls in n, so the root is
-    bracketed in (0, ltilde); safeguarded Newton with bisection.
+    f1 = 1 - tau_p - MTRx - MDU(n)/A normally falls in n (not always
+    with analytical MTRs), and the root is bracketed in (0, ltilde);
+    safeguarded Newton with bisection.
 
     If f1 keeps one sign the bracket collapses onto 0 or ltilde: labor
     supply is at a corner, where the FOC holds as an inequality, and
@@ -1359,8 +1361,12 @@ def _static_eval(
 
 
 @_jit
-def _static_point(
+def _static_search(
     n0,
+    lo,
+    hi,
+    lo_seen,
+    hi_seen,
     n_floor,
     b,
     bp_fix,
@@ -1392,16 +1398,16 @@ def _static_point(
     maxiter,
 ):
     """
-    Within-period solution at one point (see ``_static_solve``).
+    Root of the labor FOC F (``_static_eval``) in [lo, hi] by
+    safeguarded Newton with bisection, starting from n0. lo_seen
+    (hi_seen) says F > 0 at lo (F <= 0 at hi) is already known; an
+    unverified end is n_floor or ltilde, evaluated only when a Newton
+    step heads there, and is a corner if F keeps its sign there.
 
     Returns n, c (from the budget constraint at that n), status and
     |F| / scale.
     """
-    lo = n_floor
-    hi = ltilde
-    lo_seen = False  # F > 0 seen at lo
-    hi_seen = False  # F <= 0 seen at hi
-    n = min(max(n0, n_floor + 1e-4 * (ltilde - n_floor)), (1 - 1e-4) * ltilde)
+    n = min(max(n0, lo + 1e-4 * (hi - lo)), hi - 1e-4 * (hi - lo))
     F = np.nan
     scale = 1.0
     c = np.nan
@@ -1455,14 +1461,302 @@ def _static_point(
         n_new = n - F / dF if (dF < 0 and np.isfinite(dF)) else np.nan
         if not (lo < n_new < hi):
             if F > 0 and not hi_seen:
-                n_new = ltilde  # check for a corner at the top
+                n_new = hi  # check for a corner at the top
             elif F <= 0 and not lo_seen:
-                n_new = n_floor  # check for a corner at the bottom
+                n_new = lo  # check for a corner at the bottom
             else:
                 n_new = 0.5 * (lo + hi)
         if it < maxiter - 1:
             n = n_new
     return n, c, NOT_CONVERGED, abs(F) / scale
+
+
+@_jit
+def _period_utility(n, c, weight, sigma, chi_n, b_ellipse, upsilon, ltilde):
+    """
+    Utility of consumption (weight times OG-Core's, stitched below
+    c = 0.003 to match ``_mu_c``) plus utility of leisure, up to
+    constants: the within-period objective at given savings.
+    """
+    if c >= MU_C_EPS:
+        u = np.log(c) if sigma == 1.0 else c ** (1 - sigma) / (1 - sigma)
+    else:
+        b2 = (-sigma * (MU_C_EPS ** (-sigma - 1))) / 2
+        b1 = (MU_C_EPS ** (-sigma)) - 2 * b2 * MU_C_EPS
+        if sigma == 1.0:
+            u = np.log(MU_C_EPS)
+        else:
+            u = MU_C_EPS ** (1 - sigma) / (1 - sigma)
+        u += b1 * (c - MU_C_EPS) + b2 * (c * c - MU_C_EPS * MU_C_EPS)
+    x = min(max(n / ltilde, 0.0), 1.0)
+    leisure = chi_n * b_ellipse * (1 - x**upsilon) ** (1 / upsilon)
+    return weight * u + leisure
+
+
+# points scanned for interior optima when labor is at its lower bound
+# with analytical MTRs
+STATIC_SCAN = 12
+
+
+def period_utility_np(n, c, weight, sigma, chi_n, b_ellipse, upsilon, ltilde):
+    """numpy version of ``_period_utility`` (arrays n, c, weight)."""
+    n, c, weight = np.broadcast_arrays(
+        np.asarray(n, dtype=float),
+        np.asarray(c, dtype=float),
+        np.asarray(weight, dtype=float),
+    )
+    u = np.empty(c.shape)
+    high = c >= MU_C_EPS
+    c_high = c[high]
+    if sigma == 1.0:
+        u[high] = np.log(c_high)
+        u_eps = np.log(MU_C_EPS)
+    else:
+        u[high] = c_high ** (1 - sigma) / (1 - sigma)
+        u_eps = MU_C_EPS ** (1 - sigma) / (1 - sigma)
+    b1, b2 = _mu_c_stitch(sigma)
+    c_low = c[~high]
+    u[~high] = (
+        u_eps
+        + b1 * (c_low - MU_C_EPS)
+        + b2 * (c_low * c_low - MU_C_EPS * MU_C_EPS)
+    )
+    x = np.clip(n / ltilde, 0.0, 1.0)
+    leisure = chi_n * b_ellipse * (1 - x**upsilon) ** (1 / upsilon)
+    return weight * u + leisure
+
+
+@_jit
+def _static_point(
+    n0,
+    n_floor,
+    b,
+    bp_fix,
+    kappa,
+    wez,
+    oth,
+    r,
+    p_tilde,
+    g_y,
+    sigma,
+    factor,
+    tau_p,
+    filer_i,
+    lnc,
+    knc,
+    filer_w,
+    h_w,
+    m_w,
+    p_w,
+    chi_n,
+    b_ellipse,
+    upsilon,
+    ltilde,
+    code,
+    analytical,
+    etr_params,
+    mtrx_params,
+    tol,
+    maxiter,
+):
+    """
+    Within-period solution at one point (see ``_static_solve``).
+
+    Returns n, c (from the budget constraint at that n), status and
+    |F| / scale.
+    """
+    n, c, st, res = _static_search(
+        n0,
+        n_floor,
+        ltilde,
+        False,
+        False,
+        n_floor,
+        b,
+        bp_fix,
+        kappa,
+        wez,
+        oth,
+        r,
+        p_tilde,
+        g_y,
+        sigma,
+        factor,
+        tau_p,
+        filer_i,
+        lnc,
+        knc,
+        filer_w,
+        h_w,
+        m_w,
+        p_w,
+        chi_n,
+        b_ellipse,
+        upsilon,
+        ltilde,
+        code,
+        analytical,
+        etr_params,
+        mtrx_params,
+        tol,
+        maxiter,
+    )
+    if not analytical or not (st == CONVERGED or st == CORNER):
+        return n, c, st, res
+    # Analytical MTRs can exceed 1 - tau_p at low labor income, so that
+    # not working (a corner) and an interior root can both be local
+    # optima: keep the one with the higher within-period utility.
+    weight = 1.0 + np.exp(g_y) * kappa / p_tilde
+    best_n, best_c, best_st, best_res = n, c, st, res
+    best_u = _period_utility(
+        n, c, weight, sigma, chi_n, b_ellipse, upsilon, ltilde
+    )
+    if st == CORNER and n <= n_floor:
+        # interior optima are where F turns from + to - on a scan
+        n_prev = n_floor
+        F_prev = -1.0  # F <= 0 at the lower bound
+        c_prev = c
+        for k in range(1, STATIC_SCAN + 1):
+            nk = n_floor + (ltilde - n_floor) * (k / STATIC_SCAN) ** 2
+            Fk, dFk, ck, sk = _static_eval(
+                nk,
+                b,
+                bp_fix,
+                kappa,
+                wez,
+                oth,
+                r,
+                p_tilde,
+                g_y,
+                sigma,
+                factor,
+                tau_p,
+                filer_i,
+                lnc,
+                knc,
+                filer_w,
+                h_w,
+                m_w,
+                p_w,
+                chi_n,
+                b_ellipse,
+                upsilon,
+                ltilde,
+                code,
+                analytical,
+                etr_params,
+                mtrx_params,
+            )
+            if not np.isfinite(Fk):
+                break
+            if F_prev > 0 and Fk <= 0:
+                n2, c2, st2, res2 = _static_search(
+                    0.5 * (n_prev + nk),
+                    n_prev,
+                    nk,
+                    True,
+                    True,
+                    n_floor,
+                    b,
+                    bp_fix,
+                    kappa,
+                    wez,
+                    oth,
+                    r,
+                    p_tilde,
+                    g_y,
+                    sigma,
+                    factor,
+                    tau_p,
+                    filer_i,
+                    lnc,
+                    knc,
+                    filer_w,
+                    h_w,
+                    m_w,
+                    p_w,
+                    chi_n,
+                    b_ellipse,
+                    upsilon,
+                    ltilde,
+                    code,
+                    analytical,
+                    etr_params,
+                    mtrx_params,
+                    tol,
+                    maxiter,
+                )
+                if st2 == CONVERGED:
+                    u2 = _period_utility(
+                        n2,
+                        c2,
+                        weight,
+                        sigma,
+                        chi_n,
+                        b_ellipse,
+                        upsilon,
+                        ltilde,
+                    )
+                    if u2 > best_u:
+                        best_n, best_c, best_st, best_res = n2, c2, st2, res2
+                        best_u = u2
+            n_prev = nk
+            F_prev = Fk
+            c_prev = ck
+        if F_prev > 0 and n_prev >= ltilde:
+            # F > 0 up to ltilde: working the whole endowment is a local
+            # optimum too
+            u2 = _period_utility(
+                ltilde,
+                c_prev,
+                weight,
+                sigma,
+                chi_n,
+                b_ellipse,
+                upsilon,
+                ltilde,
+            )
+            if u2 > best_u:
+                best_n, best_c, best_st, best_res = ltilde, c_prev, CORNER, 0.0
+                best_u = u2
+    else:
+        # an interior root (or the top corner): is not working better?
+        F0, dF0, c0, s0 = _static_eval(
+            n_floor,
+            b,
+            bp_fix,
+            kappa,
+            wez,
+            oth,
+            r,
+            p_tilde,
+            g_y,
+            sigma,
+            factor,
+            tau_p,
+            filer_i,
+            lnc,
+            knc,
+            filer_w,
+            h_w,
+            m_w,
+            p_w,
+            chi_n,
+            b_ellipse,
+            upsilon,
+            ltilde,
+            code,
+            analytical,
+            etr_params,
+            mtrx_params,
+        )
+        if np.isfinite(F0) and np.isfinite(c0) and F0 <= 0:
+            u0 = _period_utility(
+                n_floor, c0, weight, sigma, chi_n, b_ellipse, upsilon, ltilde
+            )
+            if u0 > best_u:
+                best_n, best_c, best_st, best_res = n_floor, c0, CORNER, 0.0
+    return best_n, best_c, best_st, best_res
 
 
 @_jit_parallel
@@ -1509,9 +1803,14 @@ def _static_solve(
     1 - tau_p at low labor income) or F >= 0 at ltilde, labor supply is
     at that bound (status CORNER), where the FOC holds as an inequality.
     The bounds are only evaluated when Newton steps head there. With
-    non-monotone F (several roots, again from analytical MTRs) the
-    solution is the root, or corner, that the search from n0 reaches: a
-    local optimum, as with OG-Core's root finder.
+    analytical MTRs F need not be monotone; then the corner at n_floor
+    and interior roots where F turns from + to - (on a scan of
+    ``STATIC_SCAN`` points) are compared by within-period utility
+    (``_period_utility``; at the last age the bequest, kappa c, enters
+    with it), so the solution is the global optimum among them. With
+    estimated MTRs OG-Core's household is defined by its FOCs, which
+    need not be those of any utility comparison, so the root the search
+    from n0 reaches is the solution.
 
     Returns n, c, status and |F| / scale, per point.
     """
@@ -1860,6 +2159,12 @@ def monotone_valid(x, ok):
 # relative tolerance on consumption when solving the Euler equation
 # directly at a node
 EULER_ROOT_TOL = 1e-11
+# outcomes of the direct solve at a node: the Euler equation holds; the
+# borrowing constraint binds (Euler inequality); savings at a jump of
+# phi from + to - (with analytical MTRs: a kink of the value function,
+# where the labor choice switches; the Euler equation holds as a pair
+# of inequalities); failed
+EULER_ROOT, EULER_AT_LIMIT, EULER_KINK, EULER_FAILED = 0, 1, 2, 3
 
 
 @_jit
@@ -1983,7 +2288,16 @@ def _euler_direct_point(
     """
     Savings at one node with assets b: the root of phi(b') = c(b, b') -
     c_E(b'), c_E by PCHIP over the knots (xr, yr, slopes dr); see
-    ``household_stoch._solve_euler_direct``. Returns b', n, solved.
+    ``household_stoch._solve_euler_direct``. Returns b', n and the
+    outcome (EULER_ROOT, EULER_AT_LIMIT, EULER_KINK or EULER_FAILED).
+
+    A bracket that collapses where phi jumps from + to - is a kink of
+    the value function only with analytical MTRs, where the
+    within-period solve picks the best labor choice and a jump means
+    that choice switches; then the end of the bracket with c > 0 is
+    returned. Otherwise (OG-Core's household is defined by its FOCs,
+    and jumps come from tax functions that are inconsistent at extreme
+    incomes) it is a failure.
     """
     nb = xr.size
     g = min(max(g, xr[0]), xr[nb - 1])
@@ -2064,13 +2378,13 @@ def _euler_direct_point(
     bracketed = False
     for it in range(4 * nb):
         if not (np.isfinite(f_lo) and np.isfinite(f_hi)):
-            return np.nan, n_guess, False
+            return np.nan, n_guess, EULER_FAILED
         if f_lo > 0 and f_hi <= 0:
             bracketed = True
             break
         if not f_lo > 0:  # the root is below
             if k_lo == 0:  # the borrowing constraint binds
-                return x_lo, n_lo, True
+                return x_lo, n_lo, EULER_AT_LIMIT
             k_hi = k_lo
             x_hi = x_lo
             f_hi = f_lo
@@ -2114,7 +2428,7 @@ def _euler_direct_point(
             )
         else:  # the root is above
             if k_hi >= nb + 2:
-                return np.nan, n_guess, False
+                return np.nan, n_guess, EULER_FAILED
             k_lo = k_hi
             x_lo = x_hi
             f_lo = f_hi
@@ -2161,10 +2475,12 @@ def _euler_direct_point(
             )
         step *= 2
     if not bracketed:
-        return np.nan, n_guess, False
+        return np.nan, n_guess, EULER_FAILED
     # regula falsi, Illinois variant
     a = x_lo
     fa = f_lo
+    n_a = n_lo
+    c_a = c_lo
     xb = x_hi
     fb = f_hi
     n_b = n_hi
@@ -2172,9 +2488,17 @@ def _euler_direct_point(
     for it in range(200):
         size = abs(c_b)
         if abs(fb) <= EULER_ROOT_TOL * size:
-            return xb, n_b, True
+            return xb, n_b, EULER_ROOT
         if abs(xb - a) <= 1e-14 * (1.0 + abs(a)):
-            return xb, n_b, abs(fb) <= 1e-8 * size
+            if abs(fb) <= 1e-8 * size:
+                return xb, n_b, EULER_ROOT
+            if analytical:
+                # phi jumps from + to -: a kink of the value function
+                if c_b > 0:
+                    return xb, n_b, EULER_KINK
+                if c_a > 0:
+                    return a, n_a, EULER_KINK
+            return np.nan, n_guess, EULER_FAILED
         x = xb - fb * (xb - a) / (fb - fa)
         if not (min(a, xb) < x < max(a, xb)):
             x = 0.5 * (a + xb)
@@ -2213,17 +2537,19 @@ def _euler_direct_point(
             maxiter,
         )
         if not np.isfinite(f):
-            return np.nan, n_guess, False
+            return np.nan, n_guess, EULER_FAILED
         if f * fb < 0:
             a = xb
             fa = fb
+            n_a = n_b
+            c_a = c_b
         else:
             fa = 0.5 * fa
         xb = x
         fb = f
         n_b = n_x
         c_b = c_x
-    return np.nan, n_guess, False
+    return np.nan, n_guess, EULER_FAILED
 
 
 @_jit_parallel
@@ -2269,7 +2595,7 @@ def _euler_direct_solve(
     P = b.size
     bp = np.empty(P)
     n = np.empty(P)
-    ok = np.empty(P, dtype=np.bool_)
+    status = np.empty(P, dtype=np.int64)
     n_floor = _labor_floor(b_ellipse, upsilon, ltilde)
     for i in prange(P):
         row = rows[i]
@@ -2309,8 +2635,8 @@ def _euler_direct_solve(
         )
         bp[i] = out[0]
         n[i] = out[1]
-        ok[i] = out[2]
-    return bp, n, ok
+        status[i] = out[2]
+    return bp, n, status
 
 
 """

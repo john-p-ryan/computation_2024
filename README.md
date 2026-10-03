@@ -33,7 +33,7 @@ uv run ruff format . && uv run ruff check .
   borrowing constraint, failures, backends, economics),
   `test_household_stoch_variants.py` (OG-Core's FOCs under other tax
   functions, analytical MTRs, filers and noncompliance; other pension
-  systems). `uv run pytest -m "not local"` is what CI runs (about 3.5
+  systems). `uv run pytest -m "not local"` is what CI runs (about 4
   minutes on 2 cores once numba has compiled; the first run compiles and
   caches the kernels); `-m local` adds the timing test.
 

@@ -217,7 +217,10 @@ def test_five_state_euler_errors(five_state):
     by_age = np.nanmax(np.abs(errors["errors"]), axis=(1, 2, 3))
     print("max Euler error by age:", np.array2string(by_age, precision=1))
     print("max with mass:", errors["max_with_mass"])
+    print("mean with mass:", errors["mean_with_mass"])
+    assert errors["nan"] == 0
     assert errors["max_with_mass"] < EULER_TOL
+    assert errors["share_above"][1e-4] == 0.0
 
 
 def test_five_state_monotone_policies(five_state):
@@ -746,6 +749,230 @@ def test_failures_raise(monkeypatch):
         )
 
 
+def test_failures_where_nobody_is_do_not_stop_the_steady_state(monkeypatch):
+    """
+    solve_all_households_ss weighs failures by the population at the
+    failed grid points: failures far above where households are are
+    logged, not raised, while the same failures stop solve_lifecycle,
+    which counts grid points, and failures where households are stop
+    both.
+    """
+    p = _five_state_specs()
+    grid = household.make_asset_grid(150.0, 60, 4.0)
+    monkeypatch.setattr(
+        household._NumbaBackend, "static", _failing_static(100.0)
+    )
+    sol = household.solve_all_households_ss(
+        R, W, [1.0], BQ, TR, FACTOR, p, theta=THETA, b_grid=grid
+    )
+    d = sol.diagnostics
+    assert d.static_failures > 1e-4 * d.n_points
+    assert d.failed_mass == 0.0
+    assert d.failed_nodes.sum() == d.static_failures + d.euler_failures
+    with pytest.raises(household.HouseholdSolverError):
+        household.solve_lifecycle(sol.inputs, grid, p.z_grid, p.z_trans)
+    # newborns hold zero assets
+    monkeypatch.setattr(
+        household._NumbaBackend, "static", _failing_static(0.0)
+    )
+    with pytest.raises(household.HouseholdSolverError, match="population"):
+        household.solve_all_households_ss(
+            R, W, [1.0], BQ, TR, FACTOR, p, theta=THETA, b_grid=grid
+        )
+
+
+def test_inputs_are_validated():
+    p, inp, grid = _one_type_inputs()
+    z, P = p.z_grid, p.z_trans
+    with pytest.raises(ValueError, match="asset grid"):
+        household.solve_lifecycle(inp, np.r_[grid[:-1], np.nan], z, P)
+    with pytest.raises(ValueError, match="z_trans"):
+        household.solve_lifecycle(inp, grid, z, P * 1.01)
+    with pytest.raises(ValueError, match="z_grid"):
+        household.solve_lifecycle(inp, grid, -z, P)
+    bad = household.LifecycleInputs(**vars(inp))
+    bad.tr = inp.tr.copy()
+    bad.tr[3, 0] = np.nan
+    with pytest.raises(ValueError, match="other than labor"):
+        household.solve_lifecycle(bad, grid, z, P)
+    with pytest.raises(ValueError, match="euler_tol"):
+        household.solve_lifecycle(
+            inp, grid, z, P, household.SolverOptions(euler_tol=1e-12)
+        )
+
+
+def test_euler_errors_report_failed_solves(five_state, monkeypatch):
+    """
+    Midpoints where a within-period solve fails count as NaN errors,
+    reported separately and as infinite in the maximum, not dropped.
+    """
+    p, sol, _ = five_state
+    original = household._static_at
+
+    def failing(inp, backend, s, b, b_next, zs, n0, options):
+        n, c = original(inp, backend, s, b, b_next, zs, n0, options)
+        if s == 10:
+            c = c.copy()
+            c[0, :3, :] = np.nan
+        return n, c
+
+    monkeypatch.setattr(household, "_static_at", failing)
+    errors = household.euler_errors(sol, ages=[9, 10])
+    assert errors["nan"] > 0
+    assert errors["max"] == np.inf
+    assert np.isnan(errors["errors"][:9]).all()  # ages not checked
+    assert np.isfinite(errors["errors"][10, 1:]).all()
+
+
+# %%
+# Pieces of the solver
+
+
+def _knot_case():
+    """
+    Synthetic knots for two types and two shocks on one grid (b' at
+    knot k is the grid node). Type 0, shock 0: b' = b + 0.25, so the
+    knots for low b' lie below the borrowing limit; shock 1: b' =
+    (b - 0.1) / 2, a constrained region below b = 0.1, and one knot
+    out of order. Type 1, shock 0: a single usable knot.
+    """
+    grid = np.array([0.0, 0.1, 0.3, 0.6, 1.0, 1.5, 2.1, 2.8])
+    nb = grid.size
+    b_endo = np.full((2, nb, 2), np.nan)
+    b_endo[0, :, 0] = grid - 0.25
+    b_endo[0, :, 1] = 2 * grid + 0.1
+    b_endo[0, 4, 1] = 10.0  # out of order: dropped
+    b_endo[1, :, 1] = grid - 0.25
+    b_endo[1, 6, 0] = 1.0  # the only knot of type 1, shock 0
+    ok = np.isfinite(b_endo)
+    n_endo = 0.3 + 0.1 * np.broadcast_to(grid[None, :, None], b_endo.shape)
+    return np.tile(grid, (2, 1)), b_endo, n_endo, ok
+
+
+def test_to_exogenous_on_synthetic_knots():
+    grid, b_endo, n_endo, ok = _knot_case()
+    b_next, n_guess, gap, counts = household._to_exogenous(
+        b_endo, n_endo, ok, grid
+    )
+    g = grid[0]
+    # type 0, shock 0: linear knots, reproduced exactly; node 0 is a
+    # gap node with the linear guess across the limit; the top node is
+    # extrapolated
+    assert np.allclose(b_next[0, :, 0], g + 0.25)
+    assert np.allclose(n_guess[0, :, 0], 0.3 + 0.1 * (g + 0.25))
+    assert gap[0, :, 0].tolist() == [True] + [False] * 7
+    # type 0, shock 1: constrained below the knot for b' = 0
+    assert b_next[0, 0, 1] == 0.0 and not gap[0, :, 1].any()
+    assert np.allclose(b_next[0, 1:, 1], (g[1:] - 0.1) / 2)
+    # type 1, shock 0: one usable knot, every node solved directly
+    assert gap[1, :, 0].all() and np.allclose(b_next[1, :, 0], g)
+    assert np.isnan(n_guess[1, :, 0]).all()
+    assert counts == {
+        "constrained": 1,
+        "gap": 1 + 8 + 1,
+        "extrapolated": 2,
+        "dropped": 1,
+    }
+
+
+def test_direct_euler_solve_backends_agree(five_state):
+    """
+    The compiled and numpy direct Euler solves give the same savings,
+    labor and outcome at every node of an age, from guesses far from
+    the solution, and agree with the solution's policies where the
+    Euler equation held at the node.
+    """
+    p, sol, _ = five_state
+    inp = sol.inputs
+    shape = sol.b_policy.shape[1:]
+    s = 40
+    grid = sol.b_grid
+    b3 = np.broadcast_to(grid[:, :, None], shape)
+    numba_backend = household._make_backend(inp, "numba")
+    v = household._value_of_savings(
+        inp,
+        numba_backend,
+        s,
+        b3,
+        sol.n_policy[s + 1],
+        sol.c_policy[s + 1],
+        sol.z_grid,
+        sol.z_trans,
+    )
+    euler_c = household._EulerConsumption(grid, kernels.inv_mu_c(v, inp.sigma))
+    pa = household._point_arrays(inp, s, shape, sol.z_grid)
+    idx = np.arange(np.prod(shape))
+    guess = 1.3 * sol.b_policy[s].ravel() + 0.1
+    n0 = np.full(idx.size, 0.5)
+    options = household.SolverOptions()
+    out = {}
+    for name in ("numba", "numpy"):
+        backend = household._make_backend(inp, name)
+        out[name] = household._solve_euler_direct(
+            backend, s, euler_c, idx, guess, n0, pa, options
+        )
+    assert (out["numba"][2] == out["numpy"][2]).all()
+    assert (out["numba"][2] == kernels.EULER_ROOT).all()
+    assert np.allclose(out["numba"][0], out["numpy"][0], rtol=1e-10)
+    assert np.allclose(out["numba"][1], out["numpy"][1], atol=1e-10)
+    assert np.allclose(out["numba"][0], sol.b_policy[s].ravel(), rtol=1e-4)
+
+
+@pytest.mark.parametrize("backend", ["numba", "numpy"])
+def test_direct_euler_solve_beyond_the_grid(five_state, backend):
+    """
+    The direct solve finds savings above the top of the grid, up to
+    twice the top, and fails beyond: with a constant Euler consumption
+    c(b, b*), the root is b*.
+    """
+    p, sol, _ = five_state
+    inp = sol.inputs
+    shape = sol.b_policy.shape[1:]
+    M, nb, nz = shape
+    s, m, i, iz = 30, 0, nb - 1, 2
+    idx = np.array([(m * nb + i) * nz + iz])
+    pa = household._point_arrays(inp, s, shape, sol.z_grid)
+    sub = {k: v[idx] for k, v in pa.items()}
+    b = sol.b_grid[m, i]
+    top = sol.b_grid[m, -1]
+    be = household._make_backend(inp, backend)
+    for factor, solved in (
+        (0.5, True),
+        (1.1, True),
+        (1.9, True),
+        (2.2, False),
+    ):
+        target = factor * top
+        _, c_t, _, _ = be.static(
+            s,
+            np.array([0.3]),
+            np.array([b]),
+            np.array([target]),
+            np.zeros(1),
+            sub,
+            1e-12,
+            60,
+        )
+        euler_c = household._EulerConsumption(
+            sol.b_grid, np.full(shape, c_t[0])
+        )
+        bp, n, outcome = household._solve_euler_direct(
+            be,
+            s,
+            euler_c,
+            idx,
+            np.array([b]),
+            np.array([0.3]),
+            pa,
+            household.SolverOptions(),
+        )
+        if solved:
+            assert outcome[0] == kernels.EULER_ROOT
+            assert np.isclose(bp[0], target, rtol=1e-8)
+        else:
+            assert outcome[0] == kernels.EULER_FAILED
+
+
 # %%
 # Backends
 
@@ -862,33 +1089,108 @@ def test_nonparametric_taxes_use_numpy_backend():
 # Analytical MTRs
 
 
-def test_analytical_mtrs_five_states():
-    """
-    OG-Core's analytical MTRs exceed 1 - tau_payroll at low labor income
-    for households with high capital income, so some households do not
-    work (labor supply at its lower bound, where the labor FOC holds as
-    an inequality). The solver handles these corners without failures.
-    The labor choice is not convex there, and Euler errors are larger
-    next to nodes where labor supply switches between the corner and
-    an interior choice; few households are there.
-    """
+@pytest.fixture(scope="module")
+def analytical_five_state():
     p = _five_state_specs()
     p.analytical_mtrs = True
     sol = household.solve_all_households_ss(
         R, W, [1.0], BQ, TR, FACTOR, p, theta=THETA
     )
+    return p, sol
+
+
+def test_analytical_mtrs_five_states(analytical_five_state):
+    """
+    OG-Core's analytical MTRs exceed 1 - tau_payroll at low labor income
+    for households with high capital income, so some households do not
+    work (labor supply at its lower bound, where the labor FOC holds as
+    an inequality). The solver handles these corners without failures
+    (a dropped endogenous-grid knot or two aside). Labor can jump between
+    the corner and an interior choice from one node to the next, so
+    Euler errors are larger between such nodes; few households are
+    there.
+    """
+    p, sol = analytical_five_state
     d = sol.diagnostics
     print(d.summary())
-    assert d.static_failures == d.egm_failures == d.euler_failures == 0
+    assert d.static_failures == d.euler_failures == 0
+    assert d.egm_failures <= 1e-5 * d.n_knots
     assert d.labor_corners > 0
     assert np.isfinite(sol.c_policy).all() and (sol.c_policy > 0).all()
     errors = household.euler_errors(sol)
-    err = np.nan_to_num(np.abs(errors["errors"]))
-    weight = 0.5 * (sol.dist[:-1, :, 1:, :] + sol.dist[:-1, :, :-1, :])
-    share_large = weight[err > 1e-3].sum() / weight.sum()
-    print("max Euler error with mass:", errors["max_with_mass"])
-    print("population share with errors above 1e-3:", share_large)
-    assert share_large < 1e-4
+    print({k: v for k, v in errors.items() if k not in ("errors", "b")})
+    assert errors["nan_with_mass"] == 0
+    assert errors["mean_with_mass"] < 1e-5
+    assert errors["share_above"][1e-3] < 1e-3
+
+
+def test_analytical_mtrs_global_labor_choice(analytical_five_state):
+    """
+    With analytical MTRs the within-period solution is the best of the
+    local optima (no work, or an interior root of the labor FOC): at
+    every node with mass, scanning labor supply on a fine grid finds no
+    higher within-period utility, whatever labor the solve starts from.
+    """
+    p, sol = analytical_five_state
+    inp = sol.inputs
+    backend = household._make_backend(inp, "numba")
+    s_list = (5, 30, 50, 70)
+    lt = inp.ltilde
+    floor = kernels.labor_floor(inp.b_ellipse, inp.upsilon, lt)
+    ns = floor + (lt - floor) * np.linspace(0, 1, 2001) ** 2
+    worst = 0.0
+    for s in s_list:
+        shape = sol.b_policy.shape[1:]
+        pa = household._point_arrays(inp, s, shape, sol.z_grid)
+        b = household._flat(sol.b_grid[:, :, None], shape)
+        bp = sol.b_policy[s].ravel()
+        mass = sol.dist[s].ravel() > 0
+        idx = np.flatnonzero(mass)
+        sub = {k: v[idx] for k, v in pa.items()}
+        zeros = np.zeros(idx.size)
+        for n0 in (1e-4, 0.3 * lt, 0.9 * lt):
+            n, c, st, _ = backend.static(
+                s,
+                np.full(idx.size, n0),
+                b[idx],
+                bp[idx],
+                zeros,
+                sub,
+                1e-12,
+                60,
+            )
+            assert np.allclose(n, sol.n_policy[s].ravel()[idx], atol=1e-8)
+        u_sol = kernels.period_utility_np(
+            n, c, 1.0, inp.sigma, inp.chi_n[s], inp.b_ellipse, inp.upsilon, lt
+        )
+        # utility on the labor grid: consumption from the budget at each n
+        for k in range(0, ns.size, 200):
+            nn = ns[k : k + 200]
+            Q = idx.size * nn.size
+            rep = np.repeat(np.arange(idx.size), nn.size)
+            F, _, cc, _ = household._NumpyBackend(inp)._static_F(
+                s,
+                np.arange(Q),
+                np.tile(nn, idx.size),
+                b[idx][rep],
+                bp[idx][rep],
+                np.zeros(Q),
+                {key: v[rep] for key, v in sub.items()},
+            )
+            u_grid = kernels.period_utility_np(
+                np.tile(nn, idx.size),
+                cc,
+                1.0,
+                inp.sigma,
+                inp.chi_n[s],
+                inp.b_ellipse,
+                inp.upsilon,
+                lt,
+            ).reshape(idx.size, nn.size)
+            gain = (u_grid.max(axis=1) - u_sol) / np.abs(u_sol)
+            worst = max(worst, gain.max())
+    print("largest utility gain from a labor grid:", worst)
+    assert worst < 1e-6
 
 
 # %%
