@@ -1,73 +1,33 @@
 # %%
-import json
+"""
+Tests of household_stoch: the pointwise household functions, the
+single-type solver, and replication of OG-Core's steady-state household
+solution with one shock state (Gate 2).
+
+Solver internals (kernels, distribution, accuracy with shocks) are
+tested in test_household_stoch_kernels.py and
+test_household_stoch_solver.py.
+"""
+
 import os
+import sys
 
 import numpy as np
 import pytest
 import scipy.interpolate as itp
 import ogcore.household as hh_core
-from ogcore import SS, tax
-from ogcore.parameters import Specifications
+from ogcore import SS, pensions, tax
 
 import household_stoch as household
+from stoch_test_utils import (
+    assert_ogcore_converged,
+    default_specs,
+    simulate_profiles,
+    solve_ogcore_benchmark,
+    ogcore_test_calibration,
+)
 
-CUR_PATH = os.path.abspath(os.path.dirname(__file__))
-# OG-Core's own test calibration (S = 40, J = 2, T = 120), copied from
-# OG-Core v0.20.1 tests/testing_params.json
-OGCORE_TESTING_PARAMS = os.path.join(CUR_PATH, "ogcore_testing_params.json")
-# Largest acceptable Euler error in an OG-Core benchmark solution
-OGCORE_EULER_TOL = 1e-8
-
-
-def load_ogcore_testing_params():
-    """Specifications with OG-Core's J = 2 test calibration."""
-    p = Specifications(baseline=True)
-    with open(OGCORE_TESTING_PARAMS) as f:
-        p.update_specifications(json.load(f))
-    return p
-
-
-def assert_ogcore_converged(euler_errors, js=None, tol=OGCORE_EULER_TOL):
-    """
-    Fail if OG-Core's household solution (Euler errors from
-    SS.inner_loop, shape 2S x J) has not converged for types ``js``.
-    """
-    euler_errors = np.asarray(euler_errors)
-    if js is None:
-        js = range(euler_errors.shape[1])
-    max_err = {j: np.abs(euler_errors[:, j]).max() for j in js}
-    bad = {j: err for j, err in max_err.items() if not err < tol}
-    assert not bad, (
-        "OG-Core benchmark did not converge; max |Euler error| by j: "
-        + ", ".join(f"j={j}: {err:.2e}" for j, err in bad.items())
-    )
-
-
-def simulate_profiles(b_policy, n_policy, b_grid, b_init=0.0):
-    """
-    Forward-simulate the deterministic (nz = 1) life-cycle profile
-    implied by one type's policy functions, starting from ``b_init``.
-
-    Args:
-        b_policy, n_policy (Numpy array): policies on the grid, (S, nb)
-        b_grid (Numpy array): asset grid, (nb,)
-
-    Returns:
-        b_splus1 (Numpy array): savings chosen at each age, (S,)
-            (OG-Core's ``bssmat`` convention)
-        n (Numpy array): labor supply at each age, (S,)
-    """
-    S = b_policy.shape[0]
-    b_splus1 = np.zeros(S)
-    n = np.zeros(S)
-    b = b_init
-    for s in range(S):
-        n[s] = itp.PchipInterpolator(b_grid, n_policy[s], extrapolate=True)(b)
-        b_splus1[s] = itp.PchipInterpolator(
-            b_grid, b_policy[s], extrapolate=True
-        )(b)
-        b = b_splus1[s]
-    return b_splus1, n
+ARCHIVE = os.path.join(os.path.dirname(__file__), "archive")
 
 
 # %%
@@ -85,36 +45,56 @@ def test_reexports_ogcore_household(name):
 
 
 def test_set_shock_process():
-    p = Specifications()
+    p = default_specs()
     Z_tfp = p.Z.copy()
     out = household.set_shock_process(p, [0.8, 1.2], [[0.9, 0.1], [0.2, 0.8]])
     assert out is p
     assert p.nz == 2
     assert np.allclose(p.z_grid, [0.8, 1.2])
     assert np.allclose(p.z_trans, [[0.9, 0.1], [0.2, 0.8]])
+    # newborns draw from the stationary distribution by default
+    assert np.allclose(p.z_dist0, [2 / 3, 1 / 3])
     # OG-Core's TFP parameter p.Z must be left alone
     assert np.array_equal(p.Z, Z_tfp)
 
 
+def test_set_shock_process_newborn_override():
+    p = household.set_shock_process(
+        default_specs(), [0.8, 1.2], [[0.9, 0.1], [0.2, 0.8]], [0.5, 0.5]
+    )
+    assert np.allclose(p.z_dist0, [0.5, 0.5])
+
+
 def test_set_shock_process_degenerate():
-    p = household.set_shock_process(Specifications(), 1.0, 1.0)
+    p = household.set_shock_process(default_specs(), 1.0, 1.0)
     assert p.nz == 1
     assert p.z_grid.shape == (1,)
     assert p.z_trans.shape == (1, 1)
+    assert np.allclose(p.z_dist0, [1.0])
 
 
 @pytest.mark.parametrize(
-    "z_grid,z_trans",
+    "z_grid,z_trans,z_dist0",
     [
-        ([0.8, 1.2], [[1.0]]),
-        ([0.8, 1.2], [[0.9, 0.2], [0.1, 0.9]]),
-        ([0.8, 1.2], [[1.1, -0.1], [0.1, 0.9]]),
+        ([0.8, 1.2], [[1.0]], None),
+        ([0.8, 1.2], [[0.9, 0.2], [0.1, 0.9]], None),
+        ([0.8, 1.2], [[1.1, -0.1], [0.1, 0.9]], None),
+        ([0.0, 1.2], [[0.9, 0.1], [0.1, 0.9]], None),
+        ([0.8, 1.2], [[0.9, 0.1], [0.1, 0.9]], [0.6, 0.6]),
+        ([0.8, 1.2], [[0.9, 0.1], [0.1, 0.9]], [1.0]),
     ],
-    ids=["wrong shape", "rows do not sum to 1", "negative entry"],
+    ids=[
+        "wrong shape",
+        "rows do not sum to 1",
+        "negative entry",
+        "zero productivity",
+        "newborn dist does not sum to 1",
+        "newborn dist wrong length",
+    ],
 )
-def test_set_shock_process_rejects_bad_input(z_grid, z_trans):
+def test_set_shock_process_rejects_bad_input(z_grid, z_trans, z_dist0):
     with pytest.raises(ValueError):
-        household.set_shock_process(Specifications(), z_grid, z_trans)
+        household.set_shock_process(default_specs(), z_grid, z_trans, z_dist0)
 
 
 # %%
@@ -145,61 +125,75 @@ def test_inv_mu_c(value, sigma, expected):
     assert np.allclose(test_value, expected)
 
 
+@pytest.mark.parametrize("sigma", [1.0, 1.5, 3.2])
+def test_inv_mu_c_inverts_marg_ut_cons(sigma):
+    """
+    inv_mu_c is the exact inverse of OG-Core's marg_ut_cons, including
+    its linear stitching below c = 0.003 and for large c.
+    """
+    c = np.concatenate(
+        [np.linspace(1e-5, 0.003, 20), np.linspace(0.003, 500, 50)]
+    )
+    assert np.allclose(
+        household.inv_mu_c(hh_core.marg_ut_cons(c, sigma), sigma),
+        c,
+        rtol=1e-12,
+    )
+
+
 # %%
-# Setup for marg_ut_beq tests
+# marg_ut_beq: chi_b * b**(-sigma), stitched linearly below b = 0.001
 
-p1 = Specifications()
-p1.chi_b = np.array([1.5, 2.5, 5.0])
-
-# Case 1: Scalar, unconstrained b (This test was correct)
-b1 = 2.0
-sigma1 = 2.0
-j1 = 1
-expected1 = p1.chi_b[j1] * (b1**-sigma1)
-
-# Case 2: Scalar, constrained b (b < epsilon)
-b2 = 0.00005
-sigma2 = 2.0
-j2 = 0
-epsilon = 0.0001
-# FIX: Correctly calculate expected value including the utility weight
-# p.chi_b[j2]
-b2_quad_2 = -sigma2 * (epsilon ** (-sigma2 - 1))
-b1_quad_2 = (epsilon**-sigma2) - b2_quad_2 * epsilon
-expected2 = p1.chi_b[j2] * (b2_quad_2 * b2 + b1_quad_2)
-
-# Case 3: Vector, mixed constrained and unconstrained
-b3 = np.array([2.0, 0.00005])
-sigma3 = 2.0
-j3 = 1
-# FIX: Correctly calculate the constrained element's expected value
-expected3_unc = p1.chi_b[j3] * (b3[0] ** -sigma3)
-b2_quad_3 = -sigma3 * (epsilon ** (-sigma3 - 1))
-b1_quad_3 = (epsilon**-sigma3) - b2_quad_3 * epsilon
-expected3_con = p1.chi_b[j3] * (b2_quad_3 * b3[1] + b1_quad_3)
-expected3 = np.array([expected3_unc, expected3_con])
+MU_BEQ_EPS = 0.001
 
 
-# Case 4: Vector, all unconstrained (This test was correct)
-b4 = np.array([2.0, 3.0])
-sigma4 = 1.5
-j4 = 2
-expected4 = p1.chi_b[j4] * (b4**-sigma4)
+def _mu_beq_stitched(b, sigma, chi_b):
+    slope = -sigma * MU_BEQ_EPS ** (-sigma - 1)
+    intercept = MU_BEQ_EPS ** (-sigma) - slope * MU_BEQ_EPS
+    return chi_b * (slope * b + intercept)
 
-# Corrected test data
-marg_ut_beq_test_data = [
-    (b1, sigma1, j1, p1, expected1),
-    (b2, sigma2, j2, p1, expected2),
-    (b3, sigma3, j3, p1, expected3),
-    (b4, sigma4, j4, p1, expected4),
-]
+
+@pytest.mark.parametrize(
+    "b,sigma,j,expected",
+    [
+        (2.0, 2.0, 1, 2.5 * 2.0**-2.0),
+        (0.0005, 2.0, 0, _mu_beq_stitched(0.0005, 2.0, 1.5)),
+        (
+            np.array([2.0, 0.0005]),
+            2.0,
+            1,
+            np.array([2.5 * 2.0**-2.0, _mu_beq_stitched(0.0005, 2.0, 2.5)]),
+        ),
+        (np.array([2.0, 3.0]), 1.5, 2, 5.0 * np.array([2.0, 3.0]) ** -1.5),
+        (0.0, 1.5, 2, _mu_beq_stitched(0.0, 1.5, 5.0)),
+    ],
+    ids=[
+        "Scalar",
+        "Scalar, stitched",
+        "Vector, mixed",
+        "Vector",
+        "At zero",
+    ],
+)
+def test_marg_ut_beq(b, sigma, j, expected):
+    p = default_specs()
+    p.chi_b = np.array([1.5, 2.5, 5.0])
+    assert np.allclose(household.marg_ut_beq(b, sigma, j, p), expected)
+
+
+def test_marg_ut_beq_continuous_at_stitch():
+    p = default_specs()
+    p.chi_b = np.array([3.0])
+    below = household.marg_ut_beq(MU_BEQ_EPS * (1 - 1e-12), 1.5, 0, p)
+    above = household.marg_ut_beq(MU_BEQ_EPS * (1 + 1e-12), 1.5, 0, p)
+    assert np.isclose(below, above, rtol=1e-9)
 
 
 # %%
 
 
 def setup_c_from_n_params():
-    p = Specifications()
+    p = default_specs()
     p.S, p.J, p.T = 5, 2, 10
     p.g_y, p.sigma, p.ltilde = 0.02, 2.0, 1.0
     p.b_ellipse, p.upsilon = 5.0, 2.0
@@ -229,14 +223,17 @@ def setup_c_from_n_params():
     }
 
 
-def get_ss_vector_expected_c(params):
+def test_c_from_n_vec():
+    """
+    c_from_n inverts the labor FOC: c**(-sigma) w e z (1 - tau_p - MTR)
+    / p_tilde = MDU(n).
+    """
+    params = setup_c_from_n_params()
     p, j = params["p"], 0
     S = p.S
     r, w, b, n, z = (np.ones(S) * params[k] for k in ("r", "w", "b", "n", "z"))
     e = np.squeeze(p.e[-1, :, j])
     chi_n = p.chi_n[:, j]
-    tau_payroll = p.tau_payroll[-1]
-    tax_noncompliance = p.labor_income_tax_noncompliance_rate[-1, j]
     mtrx_params_ss = params["mtrx_params"][-1, :, :]
     mtr_labor = tax.MTR_income(
         r,
@@ -248,179 +245,345 @@ def get_ss_vector_expected_c(params):
         e * z,
         None,
         mtrx_params_ss,
-        tax_noncompliance,
+        p.labor_income_tax_noncompliance_rate[-1, j],
         p.income_tax_filer[-1, j],
         p,
     )
-    deriv = 1 - tau_payroll - mtr_labor
+    deriv = 1 - p.tau_payroll[-1] - mtr_labor
     mdu_labor = household.marg_ut_labor(n, chi_n, p)
-    num = params["p_tilde"] * mdu_labor
-    den = w * e * z * deriv
-    return household.inv_mu_c(num / den, p.sigma)
-
-
-PARAMS = setup_c_from_n_params()
-C_SS_EXPECTED_VEC = get_ss_vector_expected_c(PARAMS)
-
-
-@pytest.mark.parametrize(
-    "method, n, b, r, w, chi_n, mtrx_p, expected_c",
-    [
-        (
-            "SS",
-            np.ones(PARAMS["p"].S) * PARAMS["n"],
-            np.ones(PARAMS["p"].S) * PARAMS["b"],
-            np.ones(PARAMS["p"].S) * PARAMS["r"],
-            np.ones(PARAMS["p"].S) * PARAMS["w"],
-            PARAMS["p"].chi_n[:, 0],
-            PARAMS["mtrx_params"][-1, :, :],
-            C_SS_EXPECTED_VEC,
-        ),
-    ],
-    ids=["SS vector"],
-)
-def test_c_from_n_vec(method, n, b, r, w, chi_n, mtrx_p, expected_c):
-    """
-    Test of the `c_from_n` function for vectorized cases (SS and TPI).
-    This test will only pass with the fixed version of `c_from_n`.
-    """
-    p = PARAMS["p"]
-    p_tilde, factor, z = (PARAMS[k] for k in ("p_tilde", "factor", "z"))
-
-    # For SS, e is calculated internally. For TPI, pass None to trigger
-    # internal calc.
+    expected = (params["p_tilde"] * mdu_labor / (w * e * z * deriv)) ** (
+        -1 / p.sigma
+    )
     test_c = household.c_from_n(
         n,
         b,
-        p_tilde,
+        params["p_tilde"],
         r,
         w,
-        factor,
+        params["factor"],
         e=None,
         z=z,
         chi_n=chi_n,
-        etr_params=PARAMS["etr_params"],
-        mtrx_params=mtrx_p,
+        etr_params=params["etr_params"],
+        mtrx_params=mtrx_params_ss,
         t=None,
-        j=0,
+        j=j,
         p=p,
-        method=method,
+        method="SS",
     )
-    assert np.allclose(test_c, expected_c)
+    assert np.allclose(test_c, expected)
+    # and the labor FOC holds at (c, n)
+    foc = household.FOC_labor(
+        r,
+        w,
+        params["p_tilde"],
+        b,
+        test_c,
+        n,
+        params["factor"],
+        e,
+        z,
+        chi_n,
+        params["etr_params"],
+        mtrx_params_ss,
+        None,
+        j,
+        p,
+        "SS",
+    )
+    assert np.allclose(foc, 0, atol=1e-12)
 
 
 # %%
-# Setup for testing b_from_c_EOL
-p_b_from_c = Specifications()
-p_b_from_c.J = 2
-# Set bequest utility weights for two ability types
-p_b_from_c.chi_b = np.array([0.5, 0.8])
-# Set coefficient of relative risk aversion
-p_b_from_c.sigma = 2.0
+# b_from_c_EOL
 
-# Test data format: (c, p_tilde, j, sigma, p, expected_b)
-test_data_b_from_c_EOL = [
-    # Scenario 1: Scalar inputs
-    (1.0, 1.1, 0, 2.0, p_b_from_c, 0.71970167),
-    # Scenario 2: Array c, scalar p_tilde, j=1
-    (
-        np.array([1.0, 2.0]),
-        1.1,
-        1,
-        2.0,
-        p_b_from_c,
-        np.array([0.910358605, 1.82071721]),
-    ),
-    # Scenario 3: Array c and p_tilde
-    (
-        np.array([1.0, 2.0]),
-        np.array([1.1, 1.2]),
-        0,
-        2.0,
-        p_b_from_c,
-        np.array([0.71970167, 1.503407726]),
-    ),
-    # Scenario 4: Different sigma
-    (
-        2.5,
-        1.0,
-        1,
-        3.0,
-        p_b_from_c,
-        (2.5 * (0.8 * 1.0) ** (1 / 3.0)) / np.exp(p_b_from_c.g_y),
-    ),
-]
+
+def _p_b_from_c():
+    p = default_specs()
+    p.J = 2
+    p.chi_b = np.array([0.5, 0.8])
+    p.sigma = 2.0
+    return p
 
 
 @pytest.mark.parametrize(
-    "c, p_tilde, j, sigma, p, expected_b",
-    test_data_b_from_c_EOL,
+    "c, p_tilde, j, sigma, expected_b",
+    [
+        (1.0, 1.1, 0, 2.0, 0.71970167),
+        (np.array([1.0, 2.0]), 1.1, 1, 2.0, np.array([0.9103586, 1.8207172])),
+        (
+            np.array([1.0, 2.0]),
+            np.array([1.1, 1.2]),
+            0,
+            2.0,
+            np.array([0.71970167, 1.50340773]),
+        ),
+        (2.5, 1.0, 1, 3.0, (2.5 * (0.8 * 1.0) ** (1 / 3.0)) / np.exp(0.03)),
+    ],
     ids=["Scalar inputs", "Array c", "Array c and p_tilde", "Different sigma"],
 )
-def test_b_from_c_EOL(c, p_tilde, j, sigma, p, expected_b):
-    """
-    Test of the household_stoch.b_from_c_EOL function.
-    """
+def test_b_from_c_EOL(c, p_tilde, j, sigma, expected_b):
+    p = _p_b_from_c()
     test_b = household.b_from_c_EOL(c, p_tilde, j, sigma, p)
     assert np.allclose(test_b, expected_b)
 
 
-# Setup for testing get_cons
-p_get_cons = Specifications()
-# Set growth rate of technology
-p_get_cons.g_y = 0.02
+def test_b_from_c_EOL_mortality():
+    """With last-age mortality rho < 1 the bequest scales by rho**(1/sigma)."""
+    p = _p_b_from_c()
+    b1 = household.b_from_c_EOL(1.0, 1.1, 0, 2.0, p)
+    b_half = household.b_from_c_EOL(1.0, 1.1, 0, 2.0, p, rho=0.5)
+    assert np.isclose(b_half, b1 * 0.5**0.5)
 
-# Test data format:
-# (r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, p, expected_cons)
-test_data_get_cons = [
-    # Case 1: Scalar inputs
-    (
-        0.04,
-        1.5,
-        1.0,
-        10.0,
-        11.0,
-        0.8,
-        0.5,
-        2.0,
-        1.0,
-        1.2,
-        p_get_cons,
-        -0.88221474,
-    ),
-    # Case 2: Vector inputs
-    (
-        np.array([0.04, 0.05]),  # r
-        np.array([1.5, 1.6]),  # w
-        np.array([1.0, 1.1]),  # p_tilde
-        np.array([10.0, 12.0]),  # b
-        np.array([11.0, 13.0]),  # b_splus1
-        np.array([0.8, 0.7]),  # n
-        np.array([0.5, 0.6]),  # bq
-        np.array([2.0, 2.5]),  # net_tax
-        np.array([1.0, 1.1]),  # e
-        np.array([1.2, 0.9]),  # z
-        p_get_cons,
-        np.array([-0.88221474, -1.3216522]),
-    ),
-]
+
+# %%
+# Budget constraint
 
 
 @pytest.mark.parametrize(
-    "r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, p, expected_cons",
-    test_data_get_cons,
+    "r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, expected_cons",
+    [
+        (0.04, 1.5, 1.0, 10.0, 11.0, 0.8, 0.5, 2.0, 1.0, 1.2, -0.88221474),
+        (
+            np.array([0.04, 0.05]),
+            np.array([1.5, 1.6]),
+            np.array([1.0, 1.1]),
+            np.array([10.0, 12.0]),
+            np.array([11.0, 13.0]),
+            np.array([0.8, 0.7]),
+            np.array([0.5, 0.6]),
+            np.array([2.0, 2.5]),
+            np.array([1.0, 1.1]),
+            np.array([1.2, 0.9]),
+            np.array([-0.88221474, -1.3216522]),
+        ),
+    ],
     ids=["Scalar inputs", "Vector inputs"],
 )
 def test_get_cons(
-    r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, p, expected_cons
+    r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, expected_cons
 ):
     """
-    Test of the household_stoch.get_cons function.
+    Consumption from the budget constraint (no remittances, minimum
+    consumption or consumption taxes).
     """
+    p = default_specs()
+    p.g_y = 0.02
     test_cons = household.get_cons(
-        r, w, p_tilde, b, b_splus1, n, bq, net_tax, e, z, p
+        r,
+        w,
+        p_tilde,
+        np.array([1.0]),
+        b,
+        b_splus1,
+        n,
+        bq,
+        0.0,
+        net_tax,
+        e,
+        z,
+        np.array([0.0]),
+        p,
     )
     assert np.allclose(test_cons, expected_cons)
+
+
+def test_get_cons_full_budget():
+    """
+    With remittances, minimum consumption and consumption taxes the
+    budget constraint is OG-Core's with labor productivity e z.
+    """
+    p = default_specs()
+    p.c_min = np.array([0.01])
+    r, w, p_tilde = 0.04, 1.5, 1.05
+    p_i, tau_c = np.array([1.1]), np.array([0.05])
+    b = np.array([0.0, 1.0, 10.0])
+    b_splus1 = np.array([0.5, 1.2, 9.0])
+    n = np.array([0.3, 0.5, 0.2])
+    bq, rm = 0.1, 0.02
+    net_tax = np.array([0.05, 0.1, 0.3])
+    e = np.array([1.0, 1.5, 0.7])
+    z = np.array([0.8, 1.0, 1.3])
+    test = household.get_cons(
+        r, w, p_tilde, p_i, b, b_splus1, n, bq, rm, net_tax, e, z, tau_c, p
+    )
+    expected = (
+        (1 + r) * b
+        + w * e * z * n
+        + bq
+        + rm
+        - net_tax
+        - np.exp(p.g_y) * b_splus1
+        - (1 + 0.05) * 1.1 * 0.01
+    ) / p_tilde
+    assert np.allclose(test, expected)
+    assert np.allclose(
+        test,
+        hh_core.get_cons(
+            r,
+            w,
+            p_tilde,
+            p_i,
+            b,
+            b_splus1,
+            n,
+            bq,
+            rm,
+            net_tax,
+            e * z,
+            tau_c,
+            p,
+            "SS",
+        ),
+    )
+
+
+def _net_tax_setup():
+    p = default_specs()
+    p.h_wealth = np.full(p.T + p.S, 0.5)
+    p.m_wealth = np.full(p.T + p.S, 1.0)
+    p.p_wealth = np.full(p.T + p.S, 0.01)
+    p.tau_bq = np.full(p.T + p.S, 0.2)
+    p.tau_payroll = np.full(p.T + p.S, 0.03)
+    p.labor_income_tax_noncompliance_rate = np.full((p.T + p.S, p.J), 0.05)
+    p.capital_income_tax_noncompliance_rate = np.full((p.T + p.S, p.J), 0.1)
+    p.income_tax_filer = np.full((p.T + p.S, p.J), 0.9)
+    p.wealth_tax_filer = np.full((p.T + p.S, p.J), 0.8)
+    S = p.S
+    args = dict(
+        r=0.05,
+        w=1.2,
+        b=np.linspace(0.0, 5.0, S),
+        n=np.linspace(0.2, 0.5, S),
+        bq=np.full(S, 0.1),
+        factor=100_000,
+        tr=np.full(S, 0.02),
+        ubi=np.full(S, 0.01),
+    )
+    return p, args
+
+
+def test_get_net_taxes_matches_ogcore():
+    """
+    Over a whole life (S-vectors), net taxes with pensions computed by
+    age equal OG-Core's tax.net_taxes, which places US-style benefits by
+    array position.
+    """
+    p, a = _net_tax_setup()
+    j = 2
+    e = p.e[-1, :, j]
+    etr = np.array(p.etr_params[-1])
+    theta = np.full(p.J, 0.3)
+    expected = tax.net_taxes(
+        a["r"],
+        a["w"],
+        a["b"],
+        a["n"],
+        a["bq"],
+        a["factor"],
+        a["tr"],
+        a["ubi"],
+        theta[j],
+        None,
+        j,
+        False,
+        "SS",
+        e,
+        etr,
+        p,
+    )
+    pension = household.pension_ss(p, a["w"], a["factor"], theta=theta)[:, j]
+    test = household.get_net_taxes(
+        a["r"],
+        a["w"],
+        a["b"],
+        a["n"],
+        a["bq"],
+        a["factor"],
+        a["tr"],
+        a["ubi"],
+        pension,
+        None,
+        j,
+        "SS",
+        e,
+        etr,
+        p,
+    )
+    assert np.allclose(test, expected, rtol=1e-12, atol=1e-14)
+    assert (pension[: p.retire[-1]] == 0).all()
+    assert (pension[p.retire[-1] :] > 0).all()
+
+
+def test_pensions_by_age_at_one_point():
+    """
+    At a single retirement age, OG-Core's net_taxes gives no pension
+    (benefits are placed by array position), which is why the household
+    grid solve takes pensions by age; get_net_taxes at that age equals
+    the whole-life calculation.
+    """
+    p, a = _net_tax_setup()
+    j, s = 3, p.retire[-1] + 2
+    e = p.e[-1, :, j]
+    etr = np.array(p.etr_params[-1])
+    theta = np.full(p.J, 0.25)
+    pension = household.pension_ss(p, a["w"], a["factor"], theta=theta)[:, j]
+    point = [a[k][s] for k in ("b", "n", "bq")]
+    whole_life = household.get_net_taxes(
+        a["r"],
+        a["w"],
+        a["b"],
+        a["n"],
+        a["bq"],
+        a["factor"],
+        a["tr"],
+        a["ubi"],
+        pension,
+        None,
+        j,
+        "SS",
+        e,
+        etr,
+        p,
+    )[s]
+    at_age = household.get_net_taxes(
+        a["r"],
+        a["w"],
+        point[0],
+        point[1],
+        point[2],
+        a["factor"],
+        a["tr"][s],
+        a["ubi"][s],
+        pension[s],
+        None,
+        j,
+        "SS",
+        e[s],
+        etr[s],
+        p,
+    )
+    ogcore_at_age = tax.net_taxes(
+        a["r"],
+        a["w"],
+        point[0],
+        np.atleast_1d(point[1]),
+        point[2],
+        a["factor"],
+        a["tr"][s],
+        a["ubi"][s],
+        theta[j],
+        None,
+        j,
+        False,
+        "SS",
+        e[s],
+        etr[s],
+        p,
+    )
+    assert np.isclose(at_age, whole_life, rtol=1e-12)
+    # OG-Core's version misses the pension at a single age
+    assert np.isclose(ogcore_at_age - at_age, pension[s], rtol=1e-12)
 
 
 # %%
@@ -430,7 +593,7 @@ def setup_c_from_b_splus1_params(taxes=False):
     """
     Set up parameters for testing the c_from_b_splus1 function.
     """
-    p = Specifications()
+    p = default_specs()
     p.S, p.J, p.T = 5, 1, 5
     p.beta = np.array([0.96])
     p.sigma = 2.0
@@ -513,11 +676,11 @@ def setup_c_from_b_splus1_params(taxes=False):
     prob_z_splus1 = p.z_trans[z_index, :]
     E_MU_c = consumption_utility_matrix @ prob_z_splus1
 
-    # Final calculation using the *correct* Euler equation
-    growth_term = np.exp(p.g_y)
+    # Savings Euler equation (OG-Core's FOC_savings):
+    # MU(c) / p_tilde = e^{-sigma g_y} [rho chi_b MU_b + beta (1 - rho) E]
     mu_c_rhs = bequest_utility + beta * (1 - rho_s) * E_MU_c
-    expected_c = growth_term * household.inv_mu_c(
-        p_tilde_s * mu_c_rhs, p.sigma
+    expected_c = (p_tilde_s * np.exp(-p.sigma * p.g_y) * mu_c_rhs) ** (
+        -1 / p.sigma
     )
 
     # Gather args for function call
@@ -568,7 +731,7 @@ def test_get_y_stoch():
     Test of the household_stoch.get_y() function.
     """
     # Setup parameters
-    p = Specifications()
+    p = default_specs()
     p.S = 3
     p.J = 1
     p.T = 1
@@ -598,156 +761,58 @@ def test_get_y_stoch():
     assert np.allclose(test_y2, expected_y2)
 
 
-# Setup for FOC_labor test
-# Define variables for test of SS version
-p_foc = Specifications()
-p_foc.sigma = 1.5
-p_foc.g_y = 0.04
-p_foc.b_ellipse = 0.527
-p_foc.upsilon = 1.45
-p_foc.ltilde = 1.2
-p_foc.J = 1
-p_foc.S = 3
-p_foc.T = 3
-p_foc.chi_n = np.array([0.75, 0.8, 0.9]).reshape(3, 1)
-p_foc.e = np.array([1.0, 0.9, 1.4]).reshape(3, 1)
-# Make e 3D for TPI cases if needed, but for SS it's okay
-p_foc.e = np.tile(p_foc.e.reshape(1, p_foc.S, p_foc.J), (p_foc.T, 1, 1))
-
-p_foc.labor_income_tax_noncompliance_rate = np.zeros(
-    (p_foc.T + p_foc.S, p_foc.J)
-)
-p_foc.tau_payroll = np.array([0.15])
-# Set up simple tax functions
-etr_params = np.zeros((p_foc.S, 12))
-mtrx_params = np.zeros((p_foc.S, 12))
-mtrx_params[:, 10] = 0.22  # Simple 22% MTR on labor income
-# Make tax params 3D for TPI cases
-etr_params_3d = np.tile(etr_params.reshape(1, p_foc.S, 12), (p_foc.T, 1, 1))
-mtrx_params_3d = np.tile(mtrx_params.reshape(1, p_foc.S, 12), (p_foc.T, 1, 1))
-
-
-# Variables for the test
-r = 0.05
-w = 1.2
-b = np.array([0.0, 0.8, 0.5])
-n = np.array([0.9, 0.8, 0.5])
-b_splus1 = np.array([0.8, 0.5, 0.1])
-bq = np.array([0.1, 0.1, 0.1])
-factor = 1.0
-tr = 0.0
-ubi = 0.0
-theta = np.array([0.0])
-p_tilde = 1.0
-j = 0
-t = None  # for SS
-method = "SS"
-z_scalar = 1.1
-z_vector = np.array([0.9, 1.0, 1.2])
-
-# To correctly test, we need a consistent consumption value
-e_ss = np.squeeze(p_foc.e[-1, :, j])
-net_tax_scalar_z = tax.net_taxes(
-    r,
-    w,
-    b,
-    n,
-    bq,
-    factor,
-    tr,
-    ubi,
-    theta,
-    t,
-    j,
-    False,
-    method,
-    e_ss * z_scalar,
-    etr_params,
-    p_foc,
-)
-c_scalar_z = household.get_cons(
-    r, w, p_tilde, b, b_splus1, n, bq, net_tax_scalar_z, e_ss, z_scalar, p_foc
-)
-
-net_tax_vector_z = tax.net_taxes(
-    r,
-    w,
-    b,
-    n,
-    bq,
-    factor,
-    tr,
-    ubi,
-    theta,
-    t,
-    j,
-    False,
-    method,
-    e_ss * z_vector,
-    etr_params,
-    p_foc,
-)
-c_vector_z = household.get_cons(
-    r, w, p_tilde, b, b_splus1, n, bq, net_tax_vector_z, e_ss, z_vector, p_foc
-)
-
-# Manually calculate FOC error for the scalar case
-mtrx_s = tax.MTR_income(
-    r,
-    w,
-    b,
-    n,
-    factor,
-    False,
-    e_ss * z_scalar,
-    etr_params,
-    mtrx_params,
-    0.0,
-    p_foc.income_tax_filer[-1, j],
-    p_foc,
-)
-deriv_s = 1 - p_foc.tau_payroll[-1] - mtrx_s
-mu_c_s = household.marg_ut_cons(c_scalar_z, p_foc.sigma)
-mdu_n_s = household.marg_ut_labor(n, np.squeeze(p_foc.chi_n), p_foc)
-expected_ss_scalar_z = (
-    mu_c_s * (1 / p_tilde) * w * deriv_s * e_ss * z_scalar - mdu_n_s
-)
-
-# Manually calculate FOC error for the vector case
-mtrx_v = tax.MTR_income(
-    r,
-    w,
-    b,
-    n,
-    factor,
-    False,
-    e_ss * z_vector,
-    etr_params,
-    mtrx_params,
-    0.0,
-    p_foc.income_tax_filer[-1, j],
-    p_foc,
-)
-deriv_v = 1 - p_foc.tau_payroll[-1] - mtrx_v
-mu_c_v = household.marg_ut_cons(c_vector_z, p_foc.sigma)
-mdu_n_v = household.marg_ut_labor(n, np.squeeze(p_foc.chi_n), p_foc)
-expected_ss_vector_z = (
-    mu_c_v * (1 / p_tilde) * w * deriv_v * e_ss * z_vector - mdu_n_v
-)
+def _foc_setup():
+    p = default_specs()
+    p.sigma = 1.5
+    p.g_y = 0.04
+    p.b_ellipse = 0.527
+    p.upsilon = 1.45
+    p.ltilde = 1.2
+    p.J = 1
+    p.S = 3
+    p.T = 3
+    p.chi_n = np.array([0.75, 0.8, 0.9]).reshape(3, 1)
+    p.e = np.tile(np.array([1.0, 0.9, 1.4]).reshape(1, p.S, p.J), (p.T, 1, 1))
+    p.labor_income_tax_noncompliance_rate = np.zeros((p.T + p.S, p.J))
+    p.tau_payroll = np.array([0.15])
+    mtrx_params = np.zeros((p.S, 12))
+    mtrx_params[:, 10] = 0.22  # Simple 22% MTR on labor income
+    return p, np.zeros((p.S, 12)), mtrx_params
 
 
 @pytest.mark.parametrize(
-    "c, z, e, expected",
-    [
-        (c_scalar_z, z_scalar, e_ss, expected_ss_scalar_z),
-        (c_vector_z, z_vector, e_ss, expected_ss_vector_z),
-    ],
+    "z",
+    [1.1, np.array([0.9, 1.0, 1.2])],
     ids=["SS with scalar z", "SS with vector z"],
 )
-def test_FOC_labor_stoch(c, z, e, expected):
+def test_FOC_labor_stoch(z):
     """
-    Test of the household_stoch.FOC_labor() function.
+    Test of the household_stoch.FOC_labor() function against the FOC
+    written out by hand.
     """
+    p, etr_params, mtrx_params = _foc_setup()
+    r, w, p_tilde, factor, j = 0.05, 1.2, 1.0, 1.0, 0
+    b = np.array([0.0, 0.8, 0.5])
+    n = np.array([0.9, 0.8, 0.5])
+    c = np.array([1.1, 0.9, 1.3])
+    e = np.squeeze(p.e[-1, :, j])
+    mtrx = tax.MTR_income(
+        r,
+        w,
+        b,
+        n,
+        factor,
+        False,
+        e * z,
+        etr_params,
+        mtrx_params,
+        0.0,
+        p.income_tax_filer[-1, j],
+        p,
+    )
+    expected = household.marg_ut_cons(c, p.sigma) / p_tilde * w * (
+        1 - p.tau_payroll[-1] - mtrx
+    ) * e * z - household.marg_ut_labor(n, np.squeeze(p.chi_n), p)
     test_error = household.FOC_labor(
         r,
         w,
@@ -758,205 +823,100 @@ def test_FOC_labor_stoch(c, z, e, expected):
         factor,
         e,
         z,
-        np.squeeze(p_foc.chi_n),
+        np.squeeze(p.chi_n),
         etr_params,
         mtrx_params,
-        t,
+        None,
         j,
-        p_foc,
-        method,
+        p,
+        "SS",
     )
-
     assert np.allclose(test_error, expected)
 
 
 # %% Test for BC_residual
 
-# Setup parameters and variables for a series of test cases
-p_bc = Specifications()
-p_bc.g_y = 0.02  # Set a non-zero growth rate
-savings_detrend_factor = np.exp(p_bc.g_y)
 
-# Test Case 1: Scalar inputs, zero residual
-r1, w1, p_tilde1 = 0.04, 1.5, 1.0
-b1, n1, b_splus1_1 = 10.0, 0.8, 11.0
-bq1, net_tax1, e1, z1 = 0.5, 2.0, 1.0, 1.2
-# Manually calculate the consumption level that solves the budget constraint
-resources1 = (1 + r1) * b1 + w1 * e1 * z1 * n1 + bq1 - net_tax1
-c1_zero_resid = (resources1 - b_splus1_1 * savings_detrend_factor) / p_tilde1
-args1 = (
-    c1_zero_resid,
-    n1,
-    b1,
-    b_splus1_1,
-    r1,
-    w1,
-    p_tilde1,
-    e1,
-    z1,
-    bq1,
-    net_tax1,
-    p_bc,
-)
-
-# Test Case 2: Scalar inputs, positive residual (underspending)
-c2_pos_resid = c1_zero_resid - 1.0  # Consume less than budget allows
-args2 = (
-    c2_pos_resid,
-    n1,
-    b1,
-    b_splus1_1,
-    r1,
-    w1,
-    p_tilde1,
-    e1,
-    z1,
-    bq1,
-    net_tax1,
-    p_bc,
-)
-# The residual should be the unspent amount: p_tilde * 1.0
-expected2 = p_tilde1 * 1.0
-
-# Test Case 3: Vector inputs, zero residual
-r3 = np.array([0.04, 0.05])
-w3, p_tilde3 = np.array([1.5, 1.6]), np.array([1.0, 1.1])
-b3, n3 = np.array([10.0, 12.0]), np.array([0.8, 0.7])
-b_splus1_3 = np.array([11.0, 13.0])
-bq3, net_tax3 = np.array([0.5, 0.6]), np.array([2.0, 2.5])
-e3, z3 = np.array([1.0, 1.1]), np.array([1.2, 0.9])
-# Calculate the c vector that solves the budget constraint
-resources3 = (1 + r3) * b3 + w3 * e3 * z3 * n3 + bq3 - net_tax3
-c3_zero_resid = (resources3 - b_splus1_3 * savings_detrend_factor) / p_tilde3
-args3 = (
-    c3_zero_resid,
-    n3,
-    b3,
-    b_splus1_3,
-    r3,
-    w3,
-    p_tilde3,
-    e3,
-    z3,
-    bq3,
-    net_tax3,
-    p_bc,
-)
-
-# Test Case 4: Vector inputs, non-zero residual (overspending)
-c4_neg_resid = c3_zero_resid + np.array(
-    [0.5, 2.0]
-)  # Consume more than budget allows
-args4 = (
-    c4_neg_resid,
-    n3,
-    b3,
-    b_splus1_3,
-    r3,
-    w3,
-    p_tilde3,
-    e3,
-    z3,
-    bq3,
-    net_tax3,
-    p_bc,
-)
-# The residual should be the negative of the overspent amount
-expected4 = -p_tilde3 * np.array([0.5, 2.0])
-
-
-@pytest.mark.parametrize(
-    "args, expected_residual",
-    [
-        (args1, 0.0),
-        (args2, expected2),
-        (args3, np.array([0.0, 0.0])),
-        (args4, expected4),
-    ],
-    ids=[
-        "Scalar, zero residual",
-        "Scalar, positive residual",
-        "Vector, zero residual",
-        "Vector, non-zero residual",
-    ],
-)
-def test_BC_residual(args, expected_residual):
+@pytest.mark.parametrize("vector", [False, True], ids=["Scalar", "Vector"])
+def test_BC_residual(vector):
     """
-    Test of the household_stoch.BC_residual function.
+    BC_residual is p_tilde times (consumption the budget allows - c): zero
+    at the budget, positive when consuming less.
     """
-    test_residual = household.BC_residual(*args)
-    assert np.allclose(test_residual, expected_residual)
-
-
-# %% Test for EOL_system
-
-
-def setup_EOL_system_params(vector=False):
-    """
-    Set up parameters for testing the EOL_system function.
-    This creates a consistent set of parameters and variables, then
-    manually calculates the expected residual from the budget constraint
-    at the end of life, which is what EOL_system is designed to return.
-    """
-    p = Specifications()
-    p.sigma = 2.0
+    p = default_specs()
     p.g_y = 0.02
-    p.b_ellipse = 5.0
-    p.upsilon = 2.0
-    p.ltilde = 1.0
-    p.J = 1
-    p.S = 3
-    p.T = 3
-    # p.retire = p.S
-    p.retire = np.array([p.S])  # Changed to array
-    # Use s-specific chi_n and 3D e, as EOL is age-specific
-    p.chi_n = np.array([0.8, 0.85, 0.9]).reshape(3, 1)
-    p.e = np.array([1.0, 1.1, 1.2]).reshape(3, 1)
-    p.e = np.tile(p.e.reshape(1, p.S, p.J), (p.T, 1, 1))
-    # Use j-specific chi_b
-    p.chi_b = np.array([2.5])
+    p.c_min = np.array([0.02])
+    if vector:
+        r, w, p_tilde = np.array([0.04, 0.05]), np.array([1.5, 1.6]), 1.1
+        b, n = np.array([10.0, 12.0]), np.array([0.8, 0.7])
+        b_splus1 = np.array([11.0, 13.0])
+        bq, rm = np.array([0.5, 0.6]), np.array([0.01, 0.02])
+        net_tax = np.array([2.0, 2.5])
+        e, z = np.array([1.0, 1.1]), np.array([1.2, 0.9])
+    else:
+        r, w, p_tilde = 0.04, 1.5, 1.0
+        b, n, b_splus1 = 10.0, 0.8, 11.0
+        bq, rm, net_tax, e, z = 0.5, 0.01, 2.0, 1.0, 1.2
+    p_i, tau_c = np.array([1.0]), np.array([0.1])
+    resources = (
+        (1 + r) * b
+        + w * e * z * n
+        + bq
+        + rm
+        - net_tax
+        - np.exp(p.g_y) * b_splus1
+        - 1.1 * 0.02
+    )
+    c_budget = resources / p_tilde
+    args = (b, b_splus1, r, w, p_tilde, p_i, e, z, bq, rm, net_tax, tau_c)
 
-    # Simplified tax system for clarity
+    def resid(c):
+        return household.BC_residual(c, n, *args, p)
+
+    assert np.allclose(resid(c_budget), 0.0)
+    assert np.allclose(resid(c_budget - 1.0), p_tilde * 1.0)
+    assert np.allclose(resid(c_budget + 0.5), -p_tilde * 0.5)
+
+
+# %% EOL_system and HH_system
+
+
+def _small_household():
+    p = default_specs()
+    p.sigma, p.g_y, p.ltilde = 1.5, 0.02, 1.2
+    p.b_ellipse, p.upsilon = 0.527, 1.45
+    p.J, p.S, p.T = 1, 3, 3
+    p.chi_n = np.array([0.75, 0.8, 0.9]).reshape(3, 1)
+    p.e = np.tile(np.array([1.0, 0.9, 1.4]).reshape(1, p.S, p.J), (p.T, 1, 1))
+    p.chi_b = np.array([2.5])
     p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
     p.tau_payroll = np.array([0.1, 0.1, 0.1])
-    # The functions called by EOL_system expect tax params for a specific age.
-    etr_params_s = np.zeros(12)
-    mtrx_params_s = np.zeros(12)
-    mtrx_params_s[10] = 0.20  # Flat 20% MTR on labor
+    p.c_min = np.array([0.01])
+    etr_params = np.zeros(12)
+    mtrx_params = np.zeros(12)
+    mtrx_params[10] = 0.20  # flat 20% MTR on labor
+    return p, etr_params, mtrx_params
 
-    # Function inputs
-    s_EOL = p.S - 1  # End of life period index (s=2)
-    r = 0.04
-    w = np.array([1.5])
-    p_tilde = 1.0
-    tr = 0.1
-    ubi = 0.0
-    bq = 0.2
-    theta = np.array([0.0])
-    factor = 1.0
-    j = 0
-    method = "SS"
-    # For SS method, t is not used for indexing. Can be None or 0 if not
-    # used for indexing.
-    t = None
 
-    # Get values for the specific EOL age
-    e_s = p.e[-1, s_EOL, j]
-    chi_n_s = p.chi_n[s_EOL, j]
-
-    if not vector:
-        # n = np.array([0.5])
-        n = 0.5
-        b = 8.0
-        z = 1.1
+@pytest.mark.parametrize("vector", [False, True], ids=["Scalar", "Vector"])
+def test_EOL_system(vector):
+    """
+    EOL_system: c from the labor FOC, bequest from the end-of-life Euler
+    equation, residual of the full budget constraint.
+    """
+    p, etr_params, mtrx_params = _small_household()
+    r, w, p_tilde, factor, j = 0.04, 1.5, 1.0, 1.0, 0
+    tr, ubi, bq, pension, rm = 0.1, 0.02, 0.2, 0.3, 0.05
+    e, chi_n = p.e[-1, -1, j], p.chi_n[-1, j]
+    if vector:
+        n, b, z = (
+            np.array([0.4, 0.6]),
+            np.array([7.0, 9.0]),
+            np.array([0.9, 1.2]),
+        )
     else:
-        n = np.array([0.4, 0.6])
-        b = np.array([7.0, 9.0])
-        z = np.array([0.9, 1.2])
-
-    n = np.atleast_1d(n)  # Ensure n is always an array for pension
-    # Manually calculate the expected residual by replicating EOL_system logic
-    # 1. Consumption from labor FOC
+        n, b, z = 0.5, 8.0, 1.1
+    n = np.atleast_1d(n)
     c = household.c_from_n(
         n,
         b,
@@ -964,22 +924,18 @@ def setup_EOL_system_params(vector=False):
         r,
         w,
         factor,
-        e_s,
+        e,
         z,
-        chi_n_s,
-        etr_params_s,
-        mtrx_params_s,
-        t=t,
-        j=j,
-        p=p,
-        method=method,
+        chi_n,
+        etr_params,
+        mtrx_params,
+        None,
+        j,
+        p,
+        "SS",
     )
-
-    # 2. Bequests from consumption
-    b_splus1 = household.b_from_c_EOL(c, p_tilde, j, p.sigma, p)
-
-    # 3. Net taxes
-    net_tax = tax.net_taxes(
+    b_splus1 = c * (p.chi_b[j] * p_tilde) ** (1 / p.sigma) / np.exp(p.g_y)
+    net_tax = household.get_net_taxes(
         r,
         w,
         b,
@@ -988,23 +944,25 @@ def setup_EOL_system_params(vector=False):
         factor,
         tr,
         ubi,
-        theta,
-        t,
+        pension,
+        None,
         j,
-        False,
-        method,
-        e_s * z,
-        etr_params_s,
+        "SS",
+        e * z,
+        etr_params,
         p,
     )
-
-    # 4. Budget constraint residual
-    expected_residual = household.BC_residual(
-        c, n, b, b_splus1, r, w, p_tilde, e_s, z, bq, net_tax, p
+    expected = (
+        (1 + r) * b
+        + w * e * z * n
+        + bq
+        + rm
+        - net_tax
+        - np.exp(p.g_y) * b_splus1
+        - (1 + p.tau_c[-1, 0]) * 0.01
+        - p_tilde * c
     )
-
-    # Gather args for the function call to EOL_system
-    args = (
+    test = household.EOL_system(
         n,
         b,
         p_tilde,
@@ -1013,110 +971,66 @@ def setup_EOL_system_params(vector=False):
         tr,
         ubi,
         bq,
-        theta,
+        pension,
         factor,
-        e_s,
+        e,
         z,
-        chi_n_s,
-        etr_params_s,
-        mtrx_params_s,
-        t,
+        chi_n,
+        etr_params,
+        mtrx_params,
+        None,
         j,
         p,
-        method,
+        "SS",
+        rm=rm,
     )
-
-    return args, expected_residual
-
-
-@pytest.mark.parametrize(
-    "vector_case", [False, True], ids=["Scalar case", "Vector case"]
-)
-def test_EOL_system(vector_case):
-    """
-    Test of the household_stoch.EOL_system function.
-    """
-    args, expected_residual = setup_EOL_system_params(vector=vector_case)
-
-    test_residual = household.EOL_system(*args)
-
-    assert np.allclose(test_residual, expected_residual)
+    assert np.allclose(test, expected)
+    if not vector:
+        assert isinstance(test, float)
 
 
-# %% Test for HH_system
-
-
-def setup_HH_system_params(scalar_case=True):
-    """
-    Set up parameters for testing the HH_system function.
-    This creates a consistent set of parameters and variables, then
-    manually calculates the expected residuals from the budget constraint
-    and the labor FOC, which is what HH_system is designed to return.
-    """
-    p = Specifications()
-    p.sigma, p.g_y, p.ltilde = 1.5, 0.02, 1.2
-    p.b_ellipse, p.upsilon = 0.527, 1.45
-    p.J, p.S, p.T = 1, 3, 3
-    p.chi_n = np.array([0.75, 0.8, 0.9]).reshape(3, 1)
-    p.e = np.array([1.0, 0.9, 1.4]).reshape(3, 1)
-    p.e = np.tile(p.e.reshape(1, p.S, p.J), (p.T, 1, 1))
-
-    # Simplified tax system
-    p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
-    p.tau_payroll = np.array([0.15])
-    etr_params_s = np.zeros(12)
-    mtrx_params_s = np.zeros(12)
-    mtrx_params_s[10] = 0.22  # Flat 22% MTR on labor
-
-    # Function inputs
-    s = 1  # A period before the end of life
-    r, w, p_tilde = 0.05, 1.2, 1.0
-    tr, ubi, bq = 0.0, 0.0, 0.1
-    theta = np.array([0.1])
-    factor = 1.0
-    j, t, method = 0, None, "SS"
-    e_s = p.e[-1, s, j]
-    chi_n_s = p.chi_n[s, j]
-
-    if scalar_case:
-        x = np.array([8.0, 0.7])  # guess for [b, n]
-        c = 7.5
-        b_splus1 = 8.2
-        z = 1.1
-    else:  # vector case for x, c, b_splus1, and z
-        x = np.array([np.array([8.0, 9.0]), np.array([0.7, 0.6])])
-        c = np.array([7.5, 8.5])
-        b_splus1 = np.array([8.2, 9.3])
-        z = np.array([1.1, 0.9])
-
-    b, n = x[0], x[1]
-
-    # need n as array for pension calculations
-    n = np.atleast_1d(n)
-
-    # Manually calculate expected residuals
-    net_tax = tax.net_taxes(
+def test_HH_system():
+    """HH_system returns the budget and labor-FOC residuals at (b, n)."""
+    p, etr_params, mtrx_params = _small_household()
+    r, w, p_tilde, factor, j = 0.05, 1.2, 1.0, 1.0, 0
+    tr, ubi, bq, pension, rm = 0.0, 0.0, 0.1, 0.1, 0.03
+    e, chi_n, z = p.e[-1, 1, j], p.chi_n[1, j], 1.1
+    b, n, c, b_splus1 = 8.0, 0.7, 7.5, 8.2
+    net_tax = household.get_net_taxes(
         r,
         w,
         b,
-        n,
+        np.atleast_1d(n),
         bq,
         factor,
         tr,
         ubi,
-        theta,
-        t,
+        pension,
+        None,
         j,
-        False,
-        method,
-        e_s * z,
-        etr_params_s,
+        "SS",
+        e * z,
+        etr_params,
         p,
     )
-    BC_error = household.BC_residual(
-        c, n, b, b_splus1, r, w, p_tilde, e_s, z, bq, net_tax, p
+    bc = household.BC_residual(
+        c,
+        n,
+        b,
+        b_splus1,
+        r,
+        w,
+        p_tilde,
+        np.ones(1),
+        e,
+        z,
+        bq,
+        rm,
+        net_tax,
+        p.tau_c[-1, :],
+        p,
     )
-    FOC_error = household.FOC_labor(
+    foc = household.FOC_labor(
         r,
         w,
         p_tilde,
@@ -1124,22 +1038,18 @@ def setup_HH_system_params(scalar_case=True):
         c,
         n,
         factor,
-        e_s,
+        e,
         z,
-        chi_n_s,
-        etr_params_s,
-        mtrx_params_s,
-        t,
+        chi_n,
+        etr_params,
+        mtrx_params,
+        None,
         j,
         p,
-        method,
+        "SS",
     )
-
-    expected_HH_error = np.array([BC_error, FOC_error])
-
-    # Gather args for the function call
-    args = (
-        x,
+    test = household.HH_system(
+        np.array([b, n]),
         c,
         b_splus1,
         r,
@@ -1149,373 +1059,257 @@ def setup_HH_system_params(scalar_case=True):
         tr,
         ubi,
         bq,
-        theta,
-        e_s,
+        pension,
+        e,
         z,
-        chi_n_s,
-        etr_params_s,
-        mtrx_params_s,
+        chi_n,
+        etr_params,
+        mtrx_params,
         j,
-        t,
+        None,
         p,
-        method,
+        "SS",
+        rm=rm,
     )
-
-    # THE FIX: Squeeze the expected error for the scalar case to match the
-    # shape of the function's output. The vector case is returned as is.
-    if scalar_case:
-        return args, np.squeeze(expected_HH_error)
-    else:
-        return args, expected_HH_error
-
-
-@pytest.mark.parametrize(
-    "scalar_case", [True, False], ids=["Scalar inputs", "Vector inputs"]
-)
-def test_HH_system(scalar_case):
-    """
-    Test of the household_stoch.HH_system function.
-    This function computes the residuals for the budget constraint and the
-    labor supply FOC for a given guess of savings (b) and labor (n).
-    """
-    args, expected_error = setup_HH_system_params(scalar_case=scalar_case)
-
-    # The HH_system function expects x to be a 1D array/list.
-    # For the vector case, we cannot pass a 2D array, so we must loop.
-    if not scalar_case:
-        # Unpack args and test each element of the vector case individually
-        (
-            x,
-            c,
-            b_splus1,
-            r,
-            w,
-            p_tilde,
-            factor,
-            tr,
-            ubi,
-            bq,
-            theta,
-            e_s,
-            z,
-            chi_n_s,
-            etr_params_s,
-            mtrx_params_s,
-            j,
-            t,
-            p,
-            method,
-        ) = args
-
-        for i in range(len(x[0])):
-            x_i = np.array([x[0][i], x[1][i]])
-            args_i = (
-                x_i,
-                c[i],
-                b_splus1[i],
-                r,
-                w,
-                p_tilde,
-                factor,
-                tr,
-                ubi,
-                bq,
-                theta,
-                e_s,
-                z[i],
-                chi_n_s,
-                etr_params_s,
-                mtrx_params_s,
-                j,
-                t,
-                p,
-                method,
-            )
-            test_error_i = household.HH_system(*args_i)
-            expected_error_i = expected_error[:, i]
-            assert np.allclose(test_error_i, expected_error_i)
-    else:  # Scalar case
-        test_error = household.HH_system(*args)
-        assert np.allclose(test_error, expected_error)
+    assert np.allclose(test, [np.squeeze(bc), np.squeeze(foc)])
 
 
 # %% Test for solve_HH
 
-# Create a Specifications object for the test
-p_solve_hh = Specifications()
-p_solve_hh.S = 4  # Life periods
-p_solve_hh.J = 1  # Ability types
-p_solve_hh.T = 4  # Time periods for TPI
-p_solve_hh.beta = np.array([0.96])
-p_solve_hh.sigma = 2.0
-p_solve_hh.g_y = 0.01
-# Two productivity states with a persistent Markov process
-household.set_shock_process(p_solve_hh, [0.8, 1.2], [[0.9, 0.1], [0.1, 0.9]])
-p_solve_hh.chi_b = np.array([2.0])
-p_solve_hh.ltilde = 1.0
-p_solve_hh.b_ellipse = 5.0
-p_solve_hh.upsilon = 2.0
-p_solve_hh.retire = np.array([p_solve_hh.S + 1])  # need as array?
 
-# Set 3D and 2D arrays for parameters as expected by functions
-p_solve_hh.e = np.tile(
-    np.linspace(1.0, 1.2, p_solve_hh.S).reshape(1, p_solve_hh.S, 1),
-    (p_solve_hh.T, 1, 1),
-)
-p_solve_hh.chi_n = np.tile(
-    np.array([0.5, 0.6, 0.7, 0.8]).reshape(1, p_solve_hh.S, 1),
-    (p_solve_hh.T, 1, 1),
-)
-p_solve_hh.rho = np.array([0.1, 0.1, 0.1, 1.0])  # Age-specific mortality rates
-
-# Tax parameters
-p_solve_hh.labor_income_tax_noncompliance_rate = np.zeros(
-    (p_solve_hh.T, p_solve_hh.J)
-)
-p_solve_hh.capital_income_tax_noncompliance_rate = np.zeros(
-    (p_solve_hh.T, p_solve_hh.J)
-)
-etr_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
-mtrx_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
-mtry_params_hh = np.zeros((p_solve_hh.T, p_solve_hh.S, 12))
-mtrx_params_hh[:, :, 10] = 0.20  # 20% MTR on labor
-mtry_params_hh[:, :, 10] = 0.10  # 10% MTR on capital
-p_solve_hh.h_wealth = np.zeros(p_solve_hh.T)
-p_solve_hh.m_wealth = np.ones(p_solve_hh.T)
-p_solve_hh.p_wealth = np.zeros(p_solve_hh.T)
-p_solve_hh.tau_payroll = np.ones(p_solve_hh.T) * 0.05
-
-# Other inputs for solve_HH for a steady-state (SS) case
-r_hh = 0.04
-w_hh = 1.2
-p_tilde_hh = 1.0
-factor_hh = 1.0
-tr_hh = 0.0
-bq_hh = 0.0
-ubi_hh = 0.0
-b_grid_hh = np.linspace(0.001, 20, 100)
-theta_hh = np.array([0.0])
-j_hh = 0
-t_hh = 0  # Start time for TPI path
-
-# For SS, functions expect S-length vectors for time-varying params
-ss_r = np.ones(p_solve_hh.S) * r_hh
-ss_w = np.ones(p_solve_hh.S) * w_hh
-ss_p_tilde = np.ones(p_solve_hh.S) * p_tilde_hh
-ss_tr = np.ones(p_solve_hh.S) * tr_hh
-ss_bq = np.ones(p_solve_hh.S) * bq_hh
-# The 't' parameter in solve_HH is used for indexing TPI paths. For SS, it
-# can be a vector of zeros.
-ss_t = np.zeros(p_solve_hh.S, dtype=int)
-ss_e = p_solve_hh.e[-1, :, j_hh]
-ss_chi_n = p_solve_hh.chi_n[-1, :, j_hh]
-ss_etr_params = etr_params_hh[-1, :, :]
-ss_mtrx_params = mtrx_params_hh[-1, :, :]
-ss_mtry_params = mtry_params_hh[-1, :, :]
-
-# This dictionary holds all arguments for the call to solve_HH
-# This is not a fixture, just a dictionary for organizing args
-solve_hh_args = {
-    "r": ss_r,
-    "w": ss_w,
-    "p_tilde": ss_p_tilde,
-    "factor": factor_hh,
-    "tr": ss_tr,
-    "bq": ss_bq,
-    "ubi": ubi_hh,
-    "b_grid": b_grid_hh,
-    "sigma": p_solve_hh.sigma,
-    "theta": theta_hh,
-    "chi_n": ss_chi_n,
-    "rho": p_solve_hh.rho,
-    "e": ss_e,
-    "etr_params": ss_etr_params,
-    "mtrx_params": ss_mtrx_params,
-    "mtry_params": ss_mtry_params,
-    "j": j_hh,
-    "t": ss_t,
-    "p": p_solve_hh,
-    "method": "SS",
-}
+def _solve_hh_problem():
+    """Small life-cycle problem: S = 4, one type, two shock states."""
+    p = default_specs()
+    p.S, p.J, p.T = 4, 1, 4
+    p.beta = np.array([0.96])
+    p.sigma = 2.0
+    p.g_y = 0.01
+    household.set_shock_process(p, [0.8, 1.2], [[0.9, 0.1], [0.1, 0.9]])
+    p.chi_b = np.array([2.0])
+    p.ltilde = 1.0
+    p.b_ellipse = 5.0
+    p.upsilon = 2.0
+    p.retire = np.array([p.S + 1])
+    p.e = np.tile(np.linspace(1.0, 1.2, p.S).reshape(1, p.S, 1), (p.T, 1, 1))
+    p.chi_n = np.tile(
+        np.array([0.5, 0.6, 0.7, 0.8]).reshape(1, p.S, 1), (p.T, 1, 1)
+    )
+    p.rho = np.array([0.1, 0.1, 0.1, 1.0])
+    p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
+    p.capital_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
+    p.h_wealth = np.zeros(p.T)
+    p.m_wealth = np.ones(p.T)
+    p.p_wealth = np.zeros(p.T)
+    p.tau_payroll = np.ones(p.T) * 0.05
+    etr = np.zeros((p.S, 12))
+    mtrx = np.zeros((p.S, 12))
+    mtry = np.zeros((p.S, 12))
+    mtrx[:, 10] = 0.20  # 20% MTR on labor
+    mtry[:, 10] = 0.10  # 10% MTR on capital
+    S = p.S
+    args = {
+        "r": np.ones(S) * 0.04,
+        "w": np.ones(S) * 1.2,
+        "p_tilde": np.ones(S),
+        "factor": 1.0,
+        "tr": np.zeros(S),
+        "bq": np.zeros(S),
+        "ubi": 0.0,
+        "b_grid": np.linspace(0.0, 20, 100),
+        "sigma": p.sigma,
+        "pension": np.zeros(S),
+        "chi_n": p.chi_n[-1, :, 0],
+        "rho": p.rho,
+        "e": p.e[-1, :, 0],
+        "etr_params": etr,
+        "mtrx_params": mtrx,
+        "mtry_params": mtry,
+        "j": 0,
+        "t": np.zeros(S, dtype=int),
+        "p": p,
+        "method": "SS",
+    }
+    return p, args
 
 
-def test_solve_HH():
+@pytest.fixture(scope="module")
+def solve_hh_result():
+    p, args = _solve_hh_problem()
+    b_policy, c_policy, n_policy, diag = household.solve_HH(
+        **args, return_diagnostics=True
+    )
+    return p, args, b_policy, c_policy, n_policy, diag
+
+
+def test_solve_HH(solve_hh_result):
     """
-    Test of the household_stoch.solve_HH function.
-    This test runs the solver and checks for plausible properties of the
-    resulting policy functions, such as shape, monotonicity, and that
-    the choices satisfy the household's first-order conditions.
+    The single-type solver returns policies with the right shapes that
+    satisfy the constraints, are monotone in assets, and at every grid
+    node satisfy the budget constraint and labor FOC exactly.
     """
-    # Use the pre-defined arguments from the module scope
-    args = solve_hh_args
-    p = args["p"]
+    p, args, b_policy, c_policy, n_policy, diag = solve_hh_result
     b_grid = args["b_grid"]
     nb = len(b_grid)
 
-    # Run the solver
-    b_policy, c_policy, n_policy = household.solve_HH(**args)
-
-    # 1. Test output shapes and types
-    assert isinstance(b_policy, np.ndarray)
-    assert isinstance(c_policy, np.ndarray)
-    assert isinstance(n_policy, np.ndarray)
     expected_shape = (p.S, nb, p.nz)
-    assert b_policy.shape == expected_shape
-    assert c_policy.shape == expected_shape
-    assert n_policy.shape == expected_shape
+    for pol in (b_policy, c_policy, n_policy):
+        assert isinstance(pol, np.ndarray)
+        assert pol.shape == expected_shape
+        assert np.isfinite(pol).all()
+    assert diag.static_failures == 0 and diag.egm_failures == 0
 
-    # 2. Test for constraint satisfaction
-    assert np.all(c_policy >= 0)
-    assert np.all(b_policy >= 0)  # Assumes borrowing constraint b >= 0
-    assert np.all(n_policy >= 0)
-    assert np.all(n_policy <= p.ltilde)
+    assert np.all(c_policy > 0)
+    assert np.all(b_policy >= b_grid[0])  # borrowing limit
+    assert np.all(n_policy > 0)
+    assert np.all(n_policy < p.ltilde)
 
-    # 3. Test for monotonicity
-    # Savings and consumption should be increasing in assets for each age
-    # and shock
+    # savings and consumption increase with assets
+    assert np.all(np.diff(b_policy, axis=1) > 0)
+    assert np.all(np.diff(c_policy, axis=1) > 0)
+
+    # budget constraint and labor FOC at every node
     for s in range(p.S):
-        for z in range(p.nz):
-            # Differences between adjacent elements in the policy should be
-            # non-negative
-            assert np.all(np.diff(c_policy[s, :, z]) >= 0)
-            assert np.all(np.diff(b_policy[s, :, z]) >= 0)
-
-    # 4. Test consistency by checking FOC and BC for a sample point
-    # Pick a point in the middle of the grid, away from the boundaries
-    s_test = p.S - 2  # Not the last period
-    b_idx_test = nb // 2
-    z_idx_test = 0
-    b_s = b_grid[b_idx_test]
-    n_s = n_policy[s_test, b_idx_test, z_idx_test]
-    c_s = c_policy[s_test, b_idx_test, z_idx_test]
-    b_splus1 = b_policy[s_test, b_idx_test, z_idx_test]
-    z_s = p.z_grid[z_idx_test]
-
-    # Check the budget constraint for this point
-    net_tax = tax.net_taxes(
-        args["r"][s_test],
-        args["w"][s_test],
-        b_s,
-        np.atleast_1d(n_s),
-        args["bq"][s_test],
-        args["factor"],
-        args["tr"][s_test],
-        args["ubi"],
-        args["theta"],
-        args["t"][s_test],
-        args["j"],
-        False,
-        "SS",
-        args["e"][s_test] * z_s,
-        args["etr_params"][s_test, :],
-        args["p"],
-    )
-    bc_resid = household.BC_residual(
-        c_s,
-        n_s,
-        b_s,
-        b_splus1,
-        args["r"][s_test],
-        args["w"][s_test],
-        args["p_tilde"][s_test],
-        args["e"][s_test],
-        z_s,
-        args["bq"][s_test],
-        net_tax,
-        p,
-    )
-
-    # Check the labor FOC for this point
-    foc_lab_resid = household.FOC_labor(
-        args["r"][s_test],
-        args["w"][s_test],
-        args["p_tilde"][s_test],
-        b_s,
-        c_s,
-        n_s,
-        args["factor"],
-        args["e"][s_test],
-        z_s,
-        args["chi_n"][s_test],
-        args["etr_params"][s_test, :],
-        args["mtrx_params"][s_test, :],
-        args["t"][s_test],
-        args["j"],
-        p,
-        "SS",
-    )
-
-    # print the maximum residuals and the index of the maximum residuals
-    print("Max BC residual:", np.max(np.abs(bc_resid)))
-    print("Index of max BC residual:", np.argmax(np.abs(bc_resid)))
-    print("Max FOC labor residual:", np.max(np.abs(foc_lab_resid)))
-    print("Index of max FOC labor residual:", np.argmax(np.abs(foc_lab_resid)))
-
-    # The residuals should be very close to zero
-    assert np.isclose(bc_resid, 0, atol=1e-5)
-    assert np.isclose(foc_lab_resid, 0, atol=1e-7)
+        for iz, z in enumerate(p.z_grid):
+            n = n_policy[s, :, iz]
+            c = c_policy[s, :, iz]
+            net_tax = household.get_net_taxes(
+                args["r"][s],
+                args["w"][s],
+                b_grid,
+                n,
+                args["bq"][s],
+                args["factor"],
+                args["tr"][s],
+                args["ubi"],
+                args["pension"][s],
+                None,
+                0,
+                "SS",
+                args["e"][s] * z,
+                args["etr_params"][s],
+                p,
+            )
+            bc = household.BC_residual(
+                c,
+                n,
+                b_grid,
+                b_policy[s, :, iz],
+                args["r"][s],
+                args["w"][s],
+                args["p_tilde"][s],
+                np.ones(1),
+                args["e"][s],
+                z,
+                args["bq"][s],
+                0.0,
+                net_tax,
+                p.tau_c[-1, :],
+                p,
+            )
+            foc = household.FOC_labor(
+                args["r"][s],
+                args["w"][s],
+                args["p_tilde"][s],
+                b_grid,
+                c,
+                n,
+                args["factor"],
+                args["e"][s],
+                z,
+                args["chi_n"][s],
+                args["etr_params"][s],
+                args["mtrx_params"][s],
+                None,
+                0,
+                p,
+                "SS",
+            )
+            assert np.abs(bc).max() < 1e-10
+            assert np.abs(foc).max() < 1e-8
 
 
-def test_ogcore_HH_soln(tmp_path):
+def test_solve_HH_end_of_life(solve_hh_result):
+    """At the last age, b' = (chi_b p_tilde)^(1/sigma) c e^{-g_y}."""
+    p, args, b_policy, c_policy, n_policy, _ = solve_hh_result
+    expected = household.b_from_c_EOL(c_policy[-1], 1.0, 0, p.sigma, p)
+    assert np.allclose(b_policy[-1], expected, rtol=1e-12)
+
+
+def test_solve_HH_matches_phase1_solver(solve_hh_result):
     """
-    This test compares the household policy functions solved for in
-    OG-Core's SS.inner_loop to the solutions from
-    household_stoch.solve_HH for one ability type (j = 0), using
-    OG-Core's own J = 2 test calibration.
+    The batched solver agrees with the Phase 1 solver (root finding at
+    every endogenous-grid point, archived as household_stoch_phase1) on
+    a problem the latter handles well.
     """
-    p = load_ogcore_testing_params()
-    p.e = np.ones((p.T + p.S, p.S, p.J))  # Effective labor units
+    sys.path.insert(0, ARCHIVE)
+    try:
+        import household_stoch_phase1 as phase1
+    finally:
+        sys.path.remove(ARCHIVE)
+    p, args, b_policy, c_policy, n_policy, _ = solve_hh_result
+    old_args = dict(args)
+    old_args["theta"] = old_args.pop("pension") * 0
+    b_old, c_old, n_old = phase1.solve_HH(**old_args)
+    # the old solver extrapolates near its borrowing limit; compare
+    # away from it
+    # (gaps are ~3e-5 there, up to ~1e-3 at the limit)
+    keep = args["b_grid"] > 1.0
+    for new, old in ((b_policy, b_old), (c_policy, c_old), (n_policy, n_old)):
+        assert np.allclose(new[:, keep], old[:, keep], atol=1e-4)
+
+
+# %%
+# One type of OG-Core's J = 2 test calibration
+
+
+def test_ogcore_HH_soln():
+    """
+    Compare the stochastic solver (one shock state) with OG-Core's
+    SS.inner_loop for type j = 0 of OG-Core's J = 2 test calibration.
+    """
+    p = ogcore_test_calibration()
+    p.e = np.ones((p.T + p.S, p.S, p.J))
     p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
     p.capital_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
-    # No transfers, remittances or UBI
     p.eta = np.zeros((p.T + p.S, p.S, p.J))
     p.eta_RM = np.zeros((p.T + p.S, p.S, p.J))
     p.ubi_nom_array = np.zeros((p.T + p.S, p.S, p.J))
-    # Need to turn off Social Security since not in OG-Stoch
     p.PIA_rate_bkt_1 = 0.0
     p.PIA_rate_bkt_2 = 0.0
     p.PIA_rate_bkt_3 = 0.0
-    r_p = 0.05
-    r = r_p
-    w = 1.2
-    p_m = np.array([1.0])
-    Y = np.array([1.4])
-    BQ = np.ones((1, p.J)) * 0.02
+    r_p, w, factor = 0.05, 1.2, 100_000
+    BQ = np.ones(p.J) * 0.02
     TR = np.array([0.01])
-    Ig_baseline = 0.0
-    factor = 100_000
     tr = hh_core.get_tr(TR, None, p, "SS")
     bq = hh_core.get_bq(BQ, None, p, "SS")
 
-    # 1. Stochastic solver with a single shock state, for j = 0
     household.set_shock_process(p, [1.0], [[1.0]])
-    b_grid = np.linspace(0.0, 7.0**0.5, 50) ** 2  # Asset grid for the test
+    b_grid = household.make_asset_grid(7.0, 50, 2.0)
     b_policy, c_policy, n_policy = household.solve_HH(
         np.ones(p.S) * r_p,
         np.ones(p.S) * w,
-        np.ones(p.S) * 1.0,  # p_tilde
+        np.ones(p.S),  # p_tilde
         factor,
         tr[:, 0],
         bq[:, 0],
-        0,  # ubi,
+        0.0,  # ubi
         b_grid,
         p.sigma,
-        0,  # theta
-        p.chi_n[-1, :],  # chi_n for the last period
-        p.rho[-1, :, 0],  # rho for the last period, j = 0
+        0.0,  # pension
+        p.chi_n[-1, :],
+        p.rho[-1, :, 0],
         np.ones(p.S),  # e
-        np.array(p.etr_params)[-1, :, :],  # etr_params for the last period
-        np.array(p.mtrx_params)[-1, :, :],  # mtrx_params for the last
-        np.array(p.mtry_params)[-1, :, :],  # mtry_params for the last period
+        np.array(p.etr_params)[-1, :, :],
+        np.array(p.mtrx_params)[-1, :, :],
+        np.array(p.mtry_params)[-1, :, :],
         0,
-        p.T,  # t, the time index
+        "unused",
         p,
         "SS",
     )
 
-    # 2. OG-Core benchmark. From a flat guess (b = 0.05, n = 0.5)
-    # SS.inner_loop does not converge on this calibration, so warm-start
-    # it from the profile implied by the stochastic solver's policies.
+    # OG-Core benchmark, warm-started from the stochastic solver's
+    # profile (from b = 0.05, n = 0.5 inner_loop does not converge here)
     b_guess, n_guess = simulate_profiles(
         b_policy[:, :, 0], n_policy[:, :, 0], b_grid
     )
@@ -1525,555 +1319,259 @@ def test_ogcore_HH_soln(tmp_path):
         bssmat,
         nssmat,
         r_p,
-        r,
+        r_p,
         w,
-        p_m,
-        Y,
+        np.array([1.0]),
+        1.4,  # Y (only enters remittances, which are zero)
         BQ,
-        TR,
-        Ig_baseline,
+        float(TR[0]),
+        0.0,
         factor,
     )
-    inner_loop_tuple = SS.inner_loop(outer_loop_vars, p, None)
-    # Only compare against a converged OG-Core solution
-    assert_ogcore_converged(inner_loop_tuple[0], js=[0])
-    b_core = inner_loop_tuple[1]
-    b_s = np.zeros((p.S, p.J))  # Savings from the inner loop
-    b_s[1:, :] = b_core[:-1, :]  # Shift savings down for the next period
-    n_core = inner_loop_tuple[2]
-    num_params = len(p.etr_params[-1][0])
-    etr_params_3D = [
-        [
-            [p.etr_params[-1][s][i] for i in range(num_params)]
-            for j in range(p.J)
-        ]
-        for s in range(p.S)
-    ]
-    taxss = tax.net_taxes(
+    euler, b_core, n_core = SS.inner_loop(outer_loop_vars, p, None)[:3]
+    assert_ogcore_converged(euler, js=[0])
+    b_s = np.zeros(p.S)
+    b_s[1:] = b_core[:-1, 0]
+    taxes = household.get_net_taxes(
         r_p,
         w,
         b_s,
-        n_core,
-        bq.reshape((p.S, p.J)),
+        n_core[:, 0],
+        bq[:, 0],
         factor,
-        tr.reshape((p.S, p.J)),
-        0,  # ubi = 0
-        0,  # theta = 0
-        None,  # t
-        None,  # j
-        False,
+        tr[:, 0],
+        0.0,
+        0.0,
+        None,
+        0,
         "SS",
-        (np.squeeze(p.e[-1, :, :])).reshape((p.S, p.J)),
-        etr_params_3D,
+        np.ones(p.S),
+        np.array(p.etr_params)[-1],
         p,
     )
-    p_i = np.dot(p.io_matrix, p_m)
     c_core = hh_core.get_cons(
         r_p,
         w,
-        1.0,  # p_tilde
-        p_i,
+        1.0,
+        np.ones(1),
         b_s,
-        b_core,
-        n_core,
-        bq,
-        0,  # rm  = 0
-        taxss,
-        np.squeeze(p.e[-1, :, :]),
+        b_core[:, 0],
+        n_core[:, 0],
+        bq[:, 0],
+        0.0,
+        taxes,
+        np.ones(p.S),
         p.tau_c[-1, :],
         p,
         "SS",
     )
-    # The diagnostics below index e as a vector over age
-    p.e = np.ones((p.S))  # Effective labor units
-    # Extrapolate linearly for points on the OG-Core "grid"
-    b_interpolated = np.zeros(p.S)
-    n_interpolated = np.zeros(p.S)
-    c_interpolated = np.zeros(p.S)
 
-    for s in range(p.S):
-        # Interpolate the policy functions for each age
-        # b_interpolated[s] = np.interp(
-        #     b_s[s, 0], b_grid, b_policy[s, :, 0]
-        # )
-        # n_interpolated[s] = np.interp(
-        #     b_s[s, 0], b_grid, n_policy[s, :, 0]
-        # )
-        # c_interpolated[s] = np.interp(
-        #     b_s[s, 0], b_grid, c_policy[s, :, 0]
-        # )
-        b_itp = itp.CubicSpline(b_grid, b_policy[s, :, 0], extrapolate=True)
-        n_itp = itp.CubicSpline(b_grid, n_policy[s, :, 0], extrapolate=True)
-        c_itp = itp.CubicSpline(b_grid, c_policy[s, :, 0], extrapolate=True)
-        b_interpolated[s] = b_itp(b_s[s, 0])
-        n_interpolated[s] = n_itp(b_s[s, 0])
-        c_interpolated[s] = c_itp(b_s[s, 0])
+    # stochastic policies at OG-Core's asset holdings
+    def at_core(policy):
+        return np.array(
+            [
+                itp.PchipInterpolator(b_grid, policy[s, :, 0])(b_s[s])
+                for s in range(p.S)
+            ]
+        )
 
-    # find mu_c at the first age
-    print("b_s 0: ", b_s[0, 0], b_grid[0])
-    print("c_s 0: ", c_core[0, 0], c_interpolated[0])
-    print("n_s 0: ", n_core[0, 0], n_interpolated[0])
-    print("b_sp1 0: ", b_core[0, 0], b_interpolated[0])
-    mu_c0_core = household.marg_ut_cons(c_interpolated[0], p.sigma)
-    mu_c0_itp = household.marg_ut_cons(c_interpolated[0], p.sigma)
-    # find mu_n at the first age
-    mu_n0_core = household.marg_ut_labor(n_interpolated[0], p.chi_n[0, 0], p)
-    mu_n0_itp = household.marg_ut_labor(n_interpolated[0], p.chi_n[0, 0], p)
-    # find c implies at the first age
-    c_implied = household.c_from_n(
-        n_core[0, 0],
-        b_s[0, 0],
-        1.0,  # p_tilde
-        r_p,
-        w,
-        factor,
-        p.e[-1],
-        p.z_grid[0],
-        p.chi_n[-1, 0],
-        np.array(p.etr_params)[-1, 0, :],
-        np.array(p.mtrx_params)[-1, 0, :],
-        t=0,
-        j=0,
-        p=p,
-        method="SS",
-    )
-    print("Consumption implied by labor FOC: ", c_implied, c_core[0, 0])
-    print("OG-Core mu_c0: ", mu_c0_core, "mu_c0_itp: ", mu_c0_itp)
-    print("OG-Core mu_n0: ", mu_n0_core, "mu_n0_itp: ", mu_n0_itp)
-    # check euler errors
-    labor_error = household.FOC_labor(
-        r_p,
-        w,
-        1.0,  # p_tilde
-        b_s[0, 0],
-        c_core[0, 0],
-        n_core[0, 0],
-        factor,
-        p.e[-1],
-        p.z_grid[0],
-        p.chi_n[-1, 0],
-        np.array(p.etr_params)[-1, 0, :],
-        np.array(p.mtrx_params)[-1, 0, :],
-        t=0,
-        j=0,
-        p=p,
-        method="SS",
-    )
-    print("Labor FOC error OG-Core: ", labor_error)
-    labor_error = household.FOC_labor(
-        r_p,
-        w,
-        1.0,  # p_tilde
-        b_s[0, 0],
-        c_interpolated[0],
-        n_interpolated[0],
-        factor,
-        p.e[-1],
-        p.z_grid[0],
-        p.chi_n[-1, 0],
-        np.array(p.etr_params)[-1, 0, :],
-        np.array(p.mtrx_params)[-1, 0, :],
-        t=0,
-        j=0,
-        p=p,
-        method="SS",
-    )
-    print("Labor FOC error OG-Stoch: ", labor_error)
-    # check savings FOC
-    b_sp1 = b_core  # Savings next period
-    p.e = np.ones((p.T + p.S, p.S, p.J))  # Effective labor units
-    save_error = hh_core.FOC_savings(
-        r_p,
-        w,
-        1.0,  # p_tilde
-        p_i,
-        b_s[:, 0],
-        b_sp1[:, 0],
-        n_core[:, 0],
-        bq[:, 0],
-        0,  # rm
-        factor,
-        tr[:, 0],
-        0,  # ubi
-        0,  # theta
-        p.rho[-1, :, 0],
-        np.array(p.etr_params)[-1, :, :],
-        np.array(p.mtry_params)[-1, :, :],
-        0,  # t
-        0,  # j
-        p,
-        method="SS",
-    )
-    print("Savings FOC error from OG-Core: ", save_error[0])
-    save_error = hh_core.FOC_savings(
-        r_p,
-        w,
-        1.0,  # p_tilde
-        p_i,
-        b_s[:, 0],
-        b_interpolated,
-        n_interpolated,
-        bq[:, 0],
-        0,  # rm
-        factor,
-        tr[:, 0],
-        0,  # ubi
-        0,  # theta
-        p.rho[-1, :, 0],
-        np.array(p.etr_params)[-1, :, :],
-        np.array(p.mtry_params)[-1, :, :],
-        0,  # t
-        0,  # j
-        p,
-        method="SS",
-    )
-    print("Savings FOC error from OG-Stoch: ", save_error[0])
-
-    # Create a plot to visualize the results
-    import matplotlib.pyplot as plt
-
-    plt.figure(figsize=(12, 8))
-    plt.scatter(b_s[:, 0], b_core[:, 0], color="red", label="OG-Core", s=10)
-    plt.scatter(
-        b_s[:, 0], b_interpolated, color="blue", label="b_interpolated", s=10
-    )
-    plt.scatter(b_grid, b_itp(b_grid), color="green", label="b_itp", s=10)
-    plt.title("Savings Policy Function")
-    plt.xlabel("Assets")
-    plt.ylabel("Savings")
-    plt.legend()
-    plt.savefig(tmp_path / "savings_policy_function.png")
-
-    plt.figure(figsize=(12, 8))
-    plt.scatter(b_s[:, 0], n_core[:, 0], color="red", label="OG-Core", s=10)
-    plt.scatter(
-        b_s[:, 0], n_interpolated, color="blue", label="n_interpolated", s=10
-    )
-    plt.scatter(b_grid, n_itp(b_grid), color="green", label="n_itp", s=10)
-    plt.title("Labor Policy Function")
-    plt.xlabel("Assets")
-    plt.ylabel("Labor Supply")
-    plt.legend()
-    plt.savefig(tmp_path / "labor_policy_function.png")
-
-    plt.figure(figsize=(12, 8))
-    plt.scatter(b_s[:, 0], c_core[:, 0], color="red", label="OG-Core", s=10)
-    plt.scatter(
-        b_s[:, 0], c_interpolated, color="blue", label="c_interpolated", s=10
-    )
-    plt.scatter(b_grid, c_itp(b_grid), color="green", label="c_itp", s=10)
-    plt.title("Consumption Policy Function")
-    plt.xlabel("Assets")
-    plt.ylabel("Consumption")
-    plt.legend()
-    plt.savefig(tmp_path / "consumption_policy_function.png")
-
-    ages = np.arange(p.S) + 20
-    plt.figure(figsize=(12, 8))
-    plt.scatter(ages, b_core[:, 0], color="red", label="OG-Core", s=10)
-    plt.scatter(
-        ages, b_interpolated, color="blue", label="b_interpolated", s=10
-    )
-    plt.title("Savings Profile")
-    plt.xlabel("Age")
-    plt.ylabel("Savings")
-    plt.legend()
-    plt.savefig(tmp_path / "savings_profile.png")
-
-    plt.figure(figsize=(12, 8))
-    plt.scatter(ages, n_core[:, 0], color="red", label="OG-Core", s=10)
-    plt.scatter(
-        ages, n_interpolated, color="blue", label="n_interpolated", s=10
-    )
-    plt.title("Labor Supply Profile")
-    plt.xlabel("Age")
-    plt.ylabel("Labor Supply")
-    plt.legend()
-    plt.savefig(tmp_path / "labor_profile.png")
-
-    plt.figure(figsize=(12, 8))
-    plt.scatter(ages, c_core[:, 0], color="red", label="OG-Core", s=10)
-    plt.scatter(
-        ages, c_interpolated, color="blue", label="c_interpolated", s=10
-    )
-    plt.title("Consumption Profile")
-    plt.xlabel("Age")
-    plt.ylabel("Consumption")
-    plt.legend()
-    plt.savefig(tmp_path / "consumption_profile.png")
-    plt.close("all")
-
-    # Check that the interpolated values match the core values
-    print("Max core labor = ", np.max(n_core[:, 0]), np.max(n_interpolated))
-    # print("OG Core consumption: ", c_core[:, 0])
-    # print("C interpolated: ", c_interpolated)
-    # print("OG Core labor: ", n_core[:, 0])
-    # print("n interpolated: ", n_interpolated)
-    # print("b_s: ", b_s[:, 0])
-    # print("b_grid: ", b_grid)
-    # print("OG Core savings: ", b_core[:, 0])
-    # print("savings interpolated: ", b_interpolated)
-    # print("B grid ", b_grid)
-    # assert np.allclose(b_interpolated, b_core[:, 0], atol=1e-5)
-    # print("Labor supply with low assets 2: ",  n_interpolated[0],
-    #       n_itp(0.0), n_itp(0.001))
-
-    # assert np.allclose(c_interpolated, c_core[:, 0], atol=1e-5)
-    print(
-        "Max difference in savings: ",
-        np.max(np.abs(b_interpolated - b_core[:, 0])),
-    )
-    print(
-        "occurred at age: ", np.argmax(np.abs(b_interpolated - b_core[:, 0]))
-    )
-    print(
-        "Max difference in labor supply: ",
-        np.max(np.abs(n_interpolated - n_core[:, 0])),
-    )
-    print(
-        "occurred at age: ", np.argmax(np.abs(n_interpolated - n_core[:, 0]))
-    )
-    print(
-        "Max difference in consumption: ",
-        np.max(np.abs(c_interpolated - c_core[:, 0])),
-    )
-    print(
-        "occurred at age: ", np.argmax(np.abs(c_interpolated - c_core[:, 0]))
-    )
-
-    print("Dims of OG-Core output:", b_core.shape, c_core.shape, n_core.shape)
-    assert np.allclose(n_interpolated, n_core[:, 0], atol=1e-3)
-    assert np.allclose(c_interpolated, c_core[:, 0], atol=1e-3)
-    assert np.allclose(b_interpolated, b_core[:, 0], atol=1e-3)
+    assert np.allclose(at_core(b_policy), b_core[:, 0], atol=1e-3)
+    assert np.allclose(at_core(n_policy), n_core[:, 0], atol=1e-3)
+    assert np.allclose(at_core(c_policy), c_core, atol=1e-3)
 
 
 # %%
-# Steady-state comparison with OG-Core for all J = 7 types (one shock state)
+# Steady-state replication of OG-Core for all J = 7 types (one shock state)
 
-# Types the stochastic solver must match today. j = 6 saves up to ~34,
-# beyond the top of the asset grid (12), until Phase 2 fixes the grid.
-REPLICATED_TYPES = [0, 1, 2, 3, 4, 5]
-REPLICATION_ATOL = 1e-3
+REPLICATION_ATOL = 1e-4
+R_SS, W_SS, FACTOR_SS = 0.05, 1.2, 100_000
+BQ_SS = np.ones(7) * 0.02
+TR_SS = np.array([0.01])
+Y_SS = 1.4
 
 
-def ogcore_inner_loop(p, bssmat, nssmat, r, w, BQ, TR, factor):
+def _replication_specs(pensions_on, full_budget=False):
     """
-    OG-Core's steady-state household solution at fixed prices (one
-    production good). Returns Euler errors (2S x J), savings b_{s+1}
-    and labor n (S x J).
+    Default calibration with one shock state. Without pensions and with
+    no transfers, remittances or UBI (Phase 1's comparison); with
+    pensions, transfers at their defaults; ``full_budget`` adds minimum
+    consumption, a consumption tax, remittances, UBI, wealth, bequest
+    and payroll taxes, a non-filer type and noncompliance.
     """
-    outer_loop_vars = (
-        bssmat.copy(),
-        nssmat.copy(),
-        r,
-        r,
-        w,
-        np.array([1.0]),  # p_m
-        np.array([1.4]),  # Y (only enters remittances, which are zero)
-        BQ,
-        TR,
-        0.0,  # Ig_baseline
-        factor,
-    )
-    euler_errors, b, n = SS.inner_loop(outer_loop_vars, p, None)[:3]
-    return euler_errors, b, n
-
-
-def solve_ogcore_benchmark(
-    p, b_guess, n_guess, r, w, BQ, TR, factor, n_steps=5
-):
-    """
-    Converged OG-Core household solution to compare against.
-
-    SS.inner_loop is warm-started from (b_guess, n_guess). A type j that
-    still does not converge is re-solved by continuation from type j - 1:
-    start from j - 1's solution and per-capita bequest and step j's
-    per-capita bequest to its own value. In this test j = 6 (population
-    share 0.01) receives very large per-capita bequests and only
-    converges this way.
-
-    Returns:
-        euler_errors, b, n as from ``ogcore_inner_loop``
-    """
-    euler, b, n = ogcore_inner_loop(p, b_guess, n_guess, r, w, BQ, TR, factor)
-    pop = p.omega_SS.sum(axis=0)
-    for j in range(1, p.J):
-        converged = np.abs(euler[:, j]).max() < OGCORE_EULER_TOL
-        prev_converged = np.abs(euler[:, j - 1]).max() < OGCORE_EULER_TOL
-        if converged or not prev_converged:
-            continue
-        bq_from, bq_to = BQ[j - 1] / pop[j - 1], BQ[j] / pop[j]
-        b_j, n_j = b[:, j - 1].copy(), n[:, j - 1].copy()
-        for frac in np.linspace(0.0, 1.0, n_steps + 1):
-            BQ_step = np.array(BQ, dtype=float)
-            BQ_step[j] = (bq_from + frac * (bq_to - bq_from)) * pop[j]
-            b_start, n_start = b.copy(), n.copy()
-            b_start[:, j], n_start[:, j] = b_j, n_j
-            e_step, b_step, n_step = ogcore_inner_loop(
-                p, b_start, n_start, r, w, BQ_step, TR, factor
-            )
-            if not np.abs(e_step[:, j]).max() < OGCORE_EULER_TOL:
-                break
-            b_j, n_j = b_step[:, j], n_step[:, j]
-        euler[:, j], b[:, j], n[:, j] = e_step[:, j], b_j, n_j
-    return euler, b, n
-
-
-@pytest.fixture(scope="module")
-def ss_comparison_setup():
-    """
-    Provides a common setup for comparing the deterministic and stochastic
-    household solvers in the steady state.
-    """
-    p = Specifications()  # Use default J=7
-    # set e for j=6 to be equal to j=5
-    p.e[:, :, 6] = p.e[:, :, 5]
-
-    # Turn off stochasticity for direct comparison
+    p = default_specs()
     household.set_shock_process(p, [1.0], [[1.0]])
+    if not pensions_on:
+        p.eta = np.zeros((p.T + p.S, p.S, p.J))
+        p.eta_RM = np.zeros((p.T + p.S, p.S, p.J))
+        p.ubi_nom_array = np.zeros((p.T + p.S, p.S, p.J))
+        p.retirement_age = np.array([p.S + p.E + 1])
+        p.retire = np.array([p.S + p.E + 1])
+        p.PIA_rate_bkt_1 = 0.0
+        p.PIA_rate_bkt_2 = 0.0
+        p.PIA_rate_bkt_3 = 0.0
+    if full_budget:
+        T, S, J = p.T, p.S, p.J
+        p.c_min = np.array([0.01])
+        p.tau_c = np.full((T + S, p.I), 0.05)
+        p.alpha_RM_T = 0.01
+        p.ubi_nom_array = np.full((T + S, S, J), 2000.0)
+        p.h_wealth = np.full(T + S, 0.5)
+        p.m_wealth = np.full(T + S, 1.0)
+        p.p_wealth = np.full(T + S, 0.01)
+        p.tau_bq = np.full(T + S, 0.2)
+        p.tau_payroll = np.full(T + S, 0.03)
+        p.income_tax_filer = np.ones((T + S, J))
+        p.income_tax_filer[:, 0] = 0.0
+        p.wealth_tax_filer = np.ones((T + S, J))
+        p.wealth_tax_filer[:, 1] = 0.0
+        p.labor_income_tax_noncompliance_rate = np.zeros((T + S, J))
+        p.labor_income_tax_noncompliance_rate[:, 2] = 0.1
+        p.capital_income_tax_noncompliance_rate = np.zeros((T + S, J))
+        p.capital_income_tax_noncompliance_rate[:, 3] = 0.2
+    return p
 
-    # Turn off extra features for a clean comparison
-    p.eta = np.zeros((p.T + p.S, p.S, p.J))
-    p.eta_RM = np.zeros((p.T + p.S, p.S, p.J))
-    p.ubi_nom_array = np.zeros((p.T + p.S, p.S, p.J))
 
-    # Turn off pensions (the stochastic solver has none yet)
-    p.retirement_age = np.array([p.S + p.E + 1])
-    p.retire = np.array([p.S + p.E + 1])
-    p.PIA_rate_bkt_1 = 0.0
-    p.PIA_rate_bkt_2 = 0.0
-    p.PIA_rate_bkt_3 = 0.0
-
-    # SS parameters
-    r_ss = 0.05
-    w_ss = 1.2
-    p_m_ss = np.array([1.0])
-    # BQ must be J-dimensional
-    BQ_ss = np.ones(p.J) * 0.02
-    TR_ss = np.array([0.01])
-    factor_ss = 100_000
-    p_tilde_ss = 1.0
-
-    # Asset grid for the stochastic solver
-    b_grid = np.linspace(0.0, 12.0**0.625, 100) ** 1.6
-
-    # Solve the stochastic household problem
-    b_policy, c_policy, n_policy = household.solve_all_households_ss(
-        r_ss, w_ss, p_tilde_ss, factor_ss, TR_ss, BQ_ss, p, b_grid
+def _solve_and_compare(pensions_on, full_budget=False, nb=None):
+    """
+    Solve the stochastic model and OG-Core's SS.inner_loop at the same
+    prices; return everything needed to compare them.
+    """
+    p = _replication_specs(pensions_on, full_budget)
+    options = household.SolverOptions() if nb is None else None
+    if nb is not None:
+        options = household.SolverOptions(nb=nb)
+    theta = None if pensions_on else np.zeros(p.J)
+    sol = household.solve_all_households_ss(
+        R_SS,
+        W_SS,
+        [1.0],
+        BQ_SS,
+        TR_SS,
+        FACTOR_SS,
+        p,
+        Y=Y_SS,
+        theta=theta,
+        options=options,
     )
-
-    # OG-Core benchmark. From a flat guess (b = 0.05, n = 0.5),
-    # SS.inner_loop fails for j = 1 and j = 6 (Euler errors ~1e2 and
-    # ~1e3), so warm-start it from the stochastic solver's profiles.
+    # OG-Core benchmark, warm-started from the stochastic solver's profiles
+    # (cold-started, inner_loop fails for j = 1 and j = 6)
     bssmat = np.zeros((p.S, p.J))
     nssmat = np.zeros((p.S, p.J))
     for j in range(p.J):
         bssmat[:, j], nssmat[:, j] = simulate_profiles(
-            b_policy[:, j, :, 0], n_policy[:, j, :, 0], b_grid
+            sol.b_policy[:, j, :, 0], sol.n_policy[:, j, :, 0], sol.b_grid[j]
         )
-    euler_core, b_core, n_core = solve_ogcore_benchmark(
-        p, bssmat, nssmat, r_ss, w_ss, BQ_ss, TR_ss, factor_ss
+    euler, b_core, n_core = solve_ogcore_benchmark(
+        p, bssmat, nssmat, R_SS, W_SS, BQ_SS, TR_SS, FACTOR_SS, Y_SS
     )
+    theta_core = None
+    if pensions_on:
+        # OG-Core's inner_loop makes theta consistent with its own labor
+        # supply; compare policies at OG-Core's theta
+        theta_core = pensions.replacement_rate_vals(
+            n_core, W_SS, FACTOR_SS, None, p
+        )
+        sol_endogenous = sol
+        sol = household.solve_all_households_ss(
+            R_SS,
+            W_SS,
+            [1.0],
+            BQ_SS,
+            TR_SS,
+            FACTOR_SS,
+            p,
+            Y=Y_SS,
+            theta=theta_core,
+            b_grid=sol.b_grid,
+            options=options,
+        )
+    else:
+        sol_endogenous = None
+    b_s = np.vstack([np.zeros((1, p.J)), b_core[:-1, :]])
 
-    # Calculate other core results needed for comparison
-    b_s_core = np.vstack([np.zeros((1, p.J)), b_core[:-1, :]])
-    tr_core = hh_core.get_tr(TR_ss, None, p, "SS")
-    bq_core = hh_core.get_bq(BQ_ss, None, p, "SS")
-
-    num_params = len(p.etr_params[-1][0])
-    etr_params_3D = [
-        [
-            [p.etr_params[-1][s][i] for i in range(num_params)]
-            for j in range(p.J)
-        ]
-        for s in range(p.S)
-    ]
-
-    tax_core = tax.net_taxes(
-        r_ss,
-        w_ss,
-        b_s_core,
-        n_core,
-        bq_core,
-        factor_ss,
-        tr_core,
-        0,  # ubi
-        0,  # theta
-        None,  # t
-        None,  # j
-        False,
-        "SS",
-        p.e[-1, :, :],
-        etr_params_3D,
-        p,
-    )
-    p_i = np.dot(p.io_matrix, p_m_ss)
-    c_core = hh_core.get_cons(
-        r_ss,
-        w_ss,
-        p_tilde_ss,
-        p_i,
-        b_s_core,
-        b_core,
-        n_core,
-        bq_core,
-        0,  # rm
-        tax_core,
-        p.e[-1, :, :],
-        p.tau_c[-1, :],
-        p,
-        "SS",
-    )
-
-    # Stochastic policies evaluated at OG-Core's asset holdings
-    b_interpolated = np.zeros_like(b_core)
-    n_interpolated = np.zeros_like(n_core)
-    c_interpolated = np.zeros_like(c_core)
-    for j in range(p.J):
-        for s in range(p.S):
-            # Since nz=1, we take the last dimension index 0
-            for pol, out in (
-                (b_policy, b_interpolated),
-                (n_policy, n_interpolated),
-                (c_policy, c_interpolated),
-            ):
+    # stochastic policies at OG-Core's asset holdings
+    def at_core(policy):
+        out = np.zeros((p.S, p.J))
+        for j in range(p.J):
+            for s in range(p.S):
                 out[s, j] = itp.PchipInterpolator(
-                    b_grid, pol[s, j, :, 0], extrapolate=True
-                )(b_s_core[s, j])
+                    sol.b_grid[j], policy[s, j, :, 0]
+                )(b_s[s, j])
+        return out
 
     return {
         "p": p,
-        "b_grid": b_grid,
-        "b_s_core": b_s_core,
-        "euler_core": euler_core,
+        "sol": sol,
+        "sol_endogenous": sol_endogenous,
+        "euler_core": euler,
         "b_core": b_core,
         "n_core": n_core,
-        "c_core": c_core,
-        "b_policy": b_policy,
-        "c_policy": c_policy,
-        "n_policy": n_policy,
-        "b_interpolated": b_interpolated,
-        "n_interpolated": n_interpolated,
-        "c_interpolated": c_interpolated,
+        "b_s_core": b_s,
+        "theta_core": theta_core,
+        "b_interpolated": at_core(sol.b_policy),
+        "n_interpolated": at_core(sol.n_policy),
     }
+
+
+@pytest.fixture(scope="module")
+def ss_comparison_setup():
+    """Pensions, transfers, remittances and UBI off (as in Phase 1)."""
+    return _solve_and_compare(pensions_on=False)
+
+
+@pytest.fixture(scope="module")
+def ss_comparison_pensions():
+    """Default calibration: pensions and transfers on."""
+    return _solve_and_compare(pensions_on=True)
+
+
+@pytest.fixture(scope="module")
+def ss_comparison_full_budget():
+    """Every term of OG-Core's budget constraint active."""
+    return _solve_and_compare(pensions_on=True, full_budget=True)
+
+
+def assert_replicates(setup, js=None, atol=REPLICATION_ATOL):
+    """
+    Assert the stochastic solver's policies, evaluated at OG-Core's asset
+    holdings, match OG-Core's b and n profiles for types ``js``.
+    """
+    p = setup["p"]
+    js = list(range(p.J)) if js is None else js
+    assert_ogcore_converged(setup["euler_core"], js=js)
+    print("\n--- Model Comparison Diagnostics ---")
+    for var in ("b", "n"):
+        diff = np.abs(setup[f"{var}_interpolated"] - setup[f"{var}_core"])
+        diff = diff[:, js]
+        s_max, j_idx = np.unravel_index(np.argmax(diff), diff.shape)
+        print(
+            f"Max difference in {var}: {diff.max():.2e} "
+            f"at (s, j) = ({s_max}, {js[j_idx]})"
+        )
+        assert np.allclose(
+            setup[f"{var}_interpolated"][:, js],
+            setup[f"{var}_core"][:, js],
+            atol=atol,
+        ), f"{var} profiles differ from OG-Core by more than {atol}"
 
 
 def test_solve_all_households_ss_shapes(ss_comparison_setup):
     """
-    Tests that the output policy functions from solve_all_households_ss
-    have the correct dimensions.
+    The policy functions from solve_all_households_ss have the right
+    dimensions, and each type got its own asset grid.
     """
+    sol = ss_comparison_setup["sol"]
     p = ss_comparison_setup["p"]
-    b_grid = ss_comparison_setup["b_grid"]
-    b_policy = ss_comparison_setup["b_policy"]
-    c_policy = ss_comparison_setup["c_policy"]
-    n_policy = ss_comparison_setup["n_policy"]
-
-    expected_shape = (p.S, p.J, len(b_grid), p.nz)
-
-    assert b_policy.shape == expected_shape
-    assert c_policy.shape == expected_shape
-    assert n_policy.shape == expected_shape
+    nb = sol.b_grid.shape[1]
+    expected_shape = (p.S, p.J, nb, p.nz)
+    assert sol.b_policy.shape == expected_shape
+    assert sol.c_policy.shape == expected_shape
+    assert sol.n_policy.shape == expected_shape
+    assert sol.dist.shape == expected_shape
+    assert sol.b_grid.shape == (p.J, nb)
+    assert (sol.b_grid[:, 0] == 0).all()
+    # j = 6 saves most: its grid reaches furthest
+    assert np.argmax(sol.b_grid[:, -1]) == p.J - 1
 
 
 def test_ogcore_benchmark_converged(ss_comparison_setup):
@@ -2084,48 +1582,71 @@ def test_ogcore_benchmark_converged(ss_comparison_setup):
     assert_ogcore_converged(ss_comparison_setup["euler_core"])
 
 
-def assert_replicates(setup, js, atol=REPLICATION_ATOL):
-    """
-    Assert the stochastic solver's policies, evaluated at OG-Core's asset
-    holdings, match OG-Core's b, n and c profiles for types ``js``.
-    """
-    assert_ogcore_converged(setup["euler_core"], js=js)
-    print("\n--- Model Comparison Diagnostics ---")
-    for var in ("b", "n", "c"):
-        diff = np.abs(setup[f"{var}_interpolated"] - setup[f"{var}_core"])
-        diff = diff[:, js]
-        s_max, j_idx = np.unravel_index(np.argmax(diff), diff.shape)
-        print(
-            f"Max difference in {var}: {diff.max():.2e} "
-            f"at (s, j) = ({s_max}, {js[j_idx]})"
-        )
-    for var in ("b", "n", "c"):
-        assert np.allclose(
-            setup[f"{var}_interpolated"][:, js],
-            setup[f"{var}_core"][:, js],
-            atol=atol,
-        ), f"{var} profiles differ from OG-Core by more than {atol}"
-
-
 def test_solve_all_households_replication(ss_comparison_setup):
     """
-    Tests that the stochastic solver `solve_all_households_ss` can
-    replicate the results from the deterministic `SS.inner_loop` when
-    stochasticity is turned off.
+    With one shock state the stochastic solver replicates OG-Core's
+    SS.inner_loop for all seven types, including j = 6 (which saves far
+    more than the others; Phase 1's common grid stopped below its
+    savings).
     """
-    assert_replicates(ss_comparison_setup, REPLICATED_TYPES)
+    assert_replicates(ss_comparison_setup)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 2: j = 6 saves up to ~34 but the asset grid stops at 12, "
-        "so its policies are extrapolated"
-    ),
-)
-def test_solve_all_households_replication_j6(ss_comparison_setup):
+def test_replication_with_pensions(ss_comparison_pensions):
     """
-    Same comparison for j = 6. Expected to fail until the asset grid is
-    widened or made type-specific; strict, so it flags when it passes.
+    Default calibration with US-style Social Security and transfers:
+    policies match OG-Core given OG-Core's replacement rates, and the
+    replacement rates the solver makes consistent with its own mean
+    earnings match OG-Core's.
     """
-    assert_replicates(ss_comparison_setup, [6])
+    setup = ss_comparison_pensions
+    assert_replicates(setup)
+    theta_own = setup["sol_endogenous"].theta
+    assert setup["sol_endogenous"].iterations["pension"] > 0
+    assert np.allclose(theta_own, setup["theta_core"], rtol=1e-4)
+    # pensions are paid from the retirement age on
+    pension = setup["sol"].pension
+    retire = setup["p"].retire[-1]
+    assert (pension[:retire] == 0).all() and (pension[retire:] > 0).all()
+
+
+def test_replication_full_budget(ss_comparison_full_budget):
+    """
+    Every term of OG-Core's budget constraint at once (minimum
+    consumption, consumption tax, remittances, UBI, wealth, bequest and
+    payroll taxes, filer status, noncompliance, pensions).
+    """
+    assert_replicates(ss_comparison_full_budget)
+
+
+def test_replication_improves_with_grid(ss_comparison_setup):
+    """
+    The gap to OG-Core shrinks as the asset grid is refined.
+    """
+    base = ss_comparison_setup
+    p = base["p"]
+    gaps = []
+    for nb in (50, 100, 200):
+        sol = household.solve_all_households_ss(
+            R_SS,
+            W_SS,
+            [1.0],
+            BQ_SS,
+            TR_SS,
+            FACTOR_SS,
+            p,
+            Y=Y_SS,
+            theta=np.zeros(p.J),
+            options=household.SolverOptions(nb=nb),
+        )
+        gap = 0.0
+        for j in range(p.J):
+            for s in range(p.S):
+                b_int = itp.PchipInterpolator(
+                    sol.b_grid[j], sol.b_policy[s, j, :, 0]
+                )(base["b_s_core"][s, j])
+                gap = max(gap, abs(b_int - base["b_core"][s, j]))
+        gaps.append(gap)
+    print("max |b gap| for nb = 50, 100, 200:", gaps)
+    assert gaps[0] > gaps[1] > gaps[2]
+    assert gaps[1] < REPLICATION_ATOL
