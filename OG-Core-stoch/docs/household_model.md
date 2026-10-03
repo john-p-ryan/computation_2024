@@ -306,6 +306,7 @@ between nodes where households are, and the mass-weighted mean):
 | DEP_totalinc taxes; fractional filers, noncompliance and a wealth tax; $\tilde l$ = 0.8 or 1.3; $\sigma$ = 1 or 3; $\chi^b \times 10$; $\upsilon$ = 1.2, 1.5, 2 or 4 | none; $1.6$-$2.7 \times 10^{-5}$ |
 | $\sigma_z = 0.4$, $\rho_z = 0.97$; seven states; both | none; $2.6$, $1.9$, $4.0 \times 10^{-5}$ |
 | Coarser grids: nb = 30; nb = 20; curvature 2 | none; $7.9 \times 10^{-4}$, $6.0 \times 10^{-3}$, $1.1 \times 10^{-4}$ |
+| nb = 30 with curvature 2 and $\sigma_z = 0.4$ | none, but errors up to 0.19 and 30% of households above $10^{-3}$: the first nodes above zero (0.04 to 0.4) are too far apart where young households are and the DEP tax rates change fastest. Keep the defaults (nb = 100, curvature 4) or check `euler_errors` |
 | $\sigma_z = 0.4$, $\rho_z = 0.97$ with analytical MTRs; without a bequest motive | none (one dropped knot); max 0.11 and 0.037, mean $1.3 \times 10^{-5}$ and $9.7 \times 10^{-6}$, 0.10% and 0.18% of households above $10^{-3}$ |
 | $\sigma = 1$ with $\chi^b \times 10$ | fails (raises) for $10^{-4}$ of the population: mostly type-6 households at ages 47-78 holding about 300, where OG-Core's DEP ETR implies a marginal tax on labor above 100% (2.5 at $n = 0.24$) while its MTR function says 0.48; the labor FOC then jumps to working the whole endowment with $c < 0$, and the Euler equation has no root |
 | $\chi^b \times 100$ | 32 Euler failures at nodes holding $1.5 \times 10^{-8}$ of the population (logged, not raised) |
