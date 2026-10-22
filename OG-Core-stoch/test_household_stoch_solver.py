@@ -343,7 +343,7 @@ def _borrowing_problem():
     p.h_wealth = np.zeros(p.T)
     p.m_wealth = np.ones(p.T)
     p.p_wealth = np.zeros(p.T)
-    p.tau_payroll = np.zeros(p.T)
+    p.tau_payroll = np.zeros((p.T, p.J))
     etr = np.zeros((p.S, 12))
     mtrx = np.zeros((p.S, 12))
     mtry = np.zeros((p.S, 12))

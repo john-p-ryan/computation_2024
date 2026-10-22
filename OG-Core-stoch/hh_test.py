@@ -198,7 +198,10 @@ def setup_c_from_n_params():
     p.g_y, p.sigma, p.ltilde = 0.02, 2.0, 1.0
     p.b_ellipse, p.upsilon = 5.0, 2.0
     p.chi_n = np.ones((p.S, p.J))
-    p.tau_payroll = np.linspace(0.05, 0.10, p.T)
+    # payroll tax by period and type (T x J since OG-Core 0.20.4)
+    p.tau_payroll = np.linspace(0.05, 0.10, p.T)[:, None] + np.array(
+        [0.0, 0.03]
+    )
     p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
     p.labor_income_tax_noncompliance_rate[:, 1] = 0.10
     e_path = np.tile(
@@ -223,13 +226,14 @@ def setup_c_from_n_params():
     }
 
 
-def test_c_from_n_vec():
+@pytest.mark.parametrize("j", [0, 1])
+def test_c_from_n_vec(j):
     """
     c_from_n inverts the labor FOC: c**(-sigma) w e z (1 - tau_p - MTR)
-    / p_tilde = MDU(n).
+    / p_tilde = MDU(n), with type j's payroll tax rate.
     """
     params = setup_c_from_n_params()
-    p, j = params["p"], 0
+    p = params["p"]
     S = p.S
     r, w, b, n, z = (np.ones(S) * params[k] for k in ("r", "w", "b", "n", "z"))
     e = np.squeeze(p.e[-1, :, j])
@@ -249,7 +253,7 @@ def test_c_from_n_vec():
         p.income_tax_filer[-1, j],
         p,
     )
-    deriv = 1 - p.tau_payroll[-1] - mtr_labor
+    deriv = 1 - p.tau_payroll[-1, j] - mtr_labor
     mdu_labor = household.marg_ut_labor(n, chi_n, p)
     expected = (params["p_tilde"] * mdu_labor / (w * e * z * deriv)) ** (
         -1 / p.sigma
@@ -444,7 +448,8 @@ def _net_tax_setup():
     p.m_wealth = np.full(p.T + p.S, 1.0)
     p.p_wealth = np.full(p.T + p.S, 0.01)
     p.tau_bq = np.full(p.T + p.S, 0.2)
-    p.tau_payroll = np.full(p.T + p.S, 0.03)
+    # payroll tax rates that differ by type
+    p.tau_payroll = np.tile(np.linspace(0.02, 0.05, p.J), (p.T + p.S, 1))
     p.labor_income_tax_noncompliance_rate = np.full((p.T + p.S, p.J), 0.05)
     p.capital_income_tax_noncompliance_rate = np.full((p.T + p.S, p.J), 0.1)
     p.income_tax_filer = np.full((p.T + p.S, p.J), 0.9)
@@ -774,7 +779,7 @@ def _foc_setup():
     p.chi_n = np.array([0.75, 0.8, 0.9]).reshape(3, 1)
     p.e = np.tile(np.array([1.0, 0.9, 1.4]).reshape(1, p.S, p.J), (p.T, 1, 1))
     p.labor_income_tax_noncompliance_rate = np.zeros((p.T + p.S, p.J))
-    p.tau_payroll = np.array([0.15])
+    p.tau_payroll = np.full((p.T + p.S, p.J), 0.15)
     mtrx_params = np.zeros((p.S, 12))
     mtrx_params[:, 10] = 0.22  # Simple 22% MTR on labor income
     return p, np.zeros((p.S, 12)), mtrx_params
@@ -811,7 +816,7 @@ def test_FOC_labor_stoch(z):
         p,
     )
     expected = household.marg_ut_cons(c, p.sigma) / p_tilde * w * (
-        1 - p.tau_payroll[-1] - mtrx
+        1 - p.tau_payroll[-1, j] - mtrx
     ) * e * z - household.marg_ut_labor(n, np.squeeze(p.chi_n), p)
     test_error = household.FOC_labor(
         r,
@@ -890,7 +895,7 @@ def _small_household():
     p.e = np.tile(np.array([1.0, 0.9, 1.4]).reshape(1, p.S, p.J), (p.T, 1, 1))
     p.chi_b = np.array([2.5])
     p.labor_income_tax_noncompliance_rate = np.zeros((p.T, p.J))
-    p.tau_payroll = np.array([0.1, 0.1, 0.1])
+    p.tau_payroll = np.full((p.T, p.J), 0.1)
     p.c_min = np.array([0.01])
     etr_params = np.zeros(12)
     mtrx_params = np.zeros(12)
@@ -1100,7 +1105,7 @@ def _solve_hh_problem():
     p.h_wealth = np.zeros(p.T)
     p.m_wealth = np.ones(p.T)
     p.p_wealth = np.zeros(p.T)
-    p.tau_payroll = np.ones(p.T) * 0.05
+    p.tau_payroll = np.full((p.T, p.J), 0.05)
     etr = np.zeros((p.S, 12))
     mtrx = np.zeros((p.S, 12))
     mtry = np.zeros((p.S, 12))
@@ -1396,7 +1401,8 @@ def _replication_specs(pensions_on, full_budget=False):
     no transfers, remittances or UBI (Phase 1's comparison); with
     pensions, transfers at their defaults; ``full_budget`` adds minimum
     consumption, a consumption tax, remittances, UBI, wealth, bequest
-    and payroll taxes, a non-filer type and noncompliance.
+    and payroll taxes (payroll taxes higher for one type), a non-filer
+    type and noncompliance.
     """
     p = default_specs()
     household.set_shock_process(p, [1.0], [[1.0]])
@@ -1419,7 +1425,8 @@ def _replication_specs(pensions_on, full_budget=False):
         p.m_wealth = np.full(T + S, 1.0)
         p.p_wealth = np.full(T + S, 0.01)
         p.tau_bq = np.full(T + S, 0.2)
-        p.tau_payroll = np.full(T + S, 0.03)
+        p.tau_payroll = np.full((T + S, J), 0.03)
+        p.tau_payroll[:, 4] = 0.06  # by type since OG-Core 0.20.4
         p.income_tax_filer = np.ones((T + S, J))
         p.income_tax_filer[:, 0] = 0.0
         p.wealth_tax_filer = np.ones((T + S, J))

@@ -250,7 +250,8 @@ def _pension_specs(system, nz=3):
     household.set_ar1_shock_process(p, nz, 0.9, 0.15)
     p.pension_system = system
     # benefit parameters are zero by default
-    p.alpha_db = 0.015
+    # alpha_db is T+S x J since OG-Core 0.21.0; let it differ by type
+    p.alpha_db = np.tile(np.linspace(0.012, 0.018, p.J), (p.T + p.S, 1))
     p.tau_p = 0.2
     p.vpoint = 0.4
     return p

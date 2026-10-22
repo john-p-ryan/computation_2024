@@ -3,9 +3,9 @@
 This note documents the household model and the solver in
 `household_stoch.py` and `household_stoch_kernels.py`. It reconciles
 the derivation in `OG-Core/ogcore/hh.md` (untracked notes on the 2024
-`stoch_inc` branch) with OG-Core 0.20's household code and replaces it
-for this project; the theory section of the eventual OG-Core docs
-(Phase 6) should start from here.
+`stoch_inc` branch) with OG-Core's household code (0.20.1, now
+0.21.2) and replaces it for this project; the theory section of the
+eventual OG-Core docs (Phase 6) should start from here.
 
 ## What changed from `hh.md`
 
@@ -69,7 +69,8 @@ T^W = f^W \frac{p^w h^w b^2}{h^w b + m^w},
 $$
 
 where $f^I, f^W$ are the income- and wealth-tax filer shares of type
-$j$ and $\nu^l, \nu^k$ the noncompliance rates. This is
+$j$, $\nu^l, \nu^k$ the noncompliance rates and $\tau^p$ the payroll
+tax rate of type $j$ (`tau_payroll` is T+S × J since OG-Core 0.20.4). This is
 `ogcore.tax.income_tax_liab` (the `ETR_income` noncompliance adjustment
 $(X\nu^l + Y\nu^k)/(X+Y)$ written out) plus `wealth_tax_liab`.
 
@@ -283,6 +284,10 @@ workers).
 
 Fixed prices $r = 0.05$, $w = 1.2$, $BQ_j = 0.02$, $TR = 0.01$,
 $factor = 100{,}000$, default calibration (J = 7, S = 80).
+Measured on OG-Core 0.20.1. On 0.21.2 (numpy 2.5) the default
+calibration's one- and five-state solutions are bit-for-bit the same,
+and the replication gaps are unchanged; the full-budget comparison now
+also gives one type a higher payroll tax.
 
 | Check | Result |
 | --- | --- |

@@ -5,7 +5,7 @@ channels:
 - conda-forge
 dependencies:
 - python>=3.12, <3.14
-- numpy>=1.26, <2.4
+- numpy>=2.5
 - ipython
 - scipy>=1.7.1
 - pandas>=1.2.5
@@ -25,4 +25,4 @@ dependencies:
 - pip
 - pip:
   - pygam
-  - ogcore==0.20.1
+  - ogcore==0.21.2

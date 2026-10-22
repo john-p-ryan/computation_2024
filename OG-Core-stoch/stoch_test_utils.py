@@ -17,7 +17,7 @@ from ogcore.parameters import Specifications
 
 CUR_PATH = os.path.abspath(os.path.dirname(__file__))
 # OG-Core's own test calibration (S = 40, J = 2, T = 120), copied from
-# OG-Core v0.20.1 tests/testing_params.json
+# OG-Core v0.20.1 tests/testing_params.json (unchanged through v0.21.2)
 OGCORE_TESTING_PARAMS = os.path.join(CUR_PATH, "ogcore_testing_params.json")
 # Largest acceptable Euler error in an OG-Core benchmark solution
 OGCORE_EULER_TOL = 1e-8

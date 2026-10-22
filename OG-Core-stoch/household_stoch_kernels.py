@@ -1217,7 +1217,9 @@ def _egm_solve(
     ``_egm_point`` at every knot. Points are ordered (type, b' node,
     shock) with b' increasing along each series; knots of a series are
     solved in order, each starting from a linear extrapolation of the
-    two before it (series run in parallel).
+    two before it (series run in parallel). Like the filer shares and
+    noncompliance rates, the payroll tax rate tau_p is per point (it
+    varies by type).
     """
     P = b0.size
     b = np.empty(P)
@@ -1259,7 +1261,7 @@ def _egm_solve(
                 oth[i],
                 r,
                 factor,
-                tau_p,
+                tau_p[i],
                 filer_i[i],
                 lnc[i],
                 knc[i],
@@ -1812,7 +1814,8 @@ def _static_solve(
     need not be those of any utility comparison, so the root the search
     from n0 reaches is the solution.
 
-    Returns n, c, status and |F| / scale, per point.
+    Inputs indexed [i] (including tau_p, the payroll tax rate) are per
+    point. Returns n, c, status and |F| / scale, per point.
     """
     P = b.size
     n_out = np.empty(P)
@@ -1834,7 +1837,7 @@ def _static_solve(
             g_y,
             sigma,
             factor,
-            tau_p,
+            tau_p[i],
             filer_i[i],
             lnc[i],
             knc[i],
@@ -2590,7 +2593,7 @@ def _euler_direct_solve(
     """
     ``_euler_direct_point`` at each point; point i uses knot row
     rows[i] of X (savings levels), Y (Euler consumption) and D (PCHIP
-    slopes).
+    slopes). Inputs indexed [i] (including tau_p) are per point.
     """
     P = b.size
     bp = np.empty(P)
@@ -2614,7 +2617,7 @@ def _euler_direct_solve(
             g_y,
             sigma,
             factor,
-            tau_p,
+            tau_p[i],
             filer_i[i],
             lnc[i],
             knc[i],

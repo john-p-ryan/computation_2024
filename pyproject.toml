@@ -5,9 +5,10 @@ description = "Prototype OG-Core household solver with idiosyncratic income shoc
 readme = "README.md"
 requires-python = ">=3.12, <3.14"
 dependencies = [
-    # Pinned to the OG-Core release Phase 1 syncs against. Bump deliberately.
-    "ogcore==0.20.1",
-    "numpy>=1.26,<2.4",
+    # Pinned to the OG-Core release the prototype is tested against.
+    # Bump deliberately. ogcore 0.20.3+ requires numpy >= 2.5.
+    "ogcore==0.21.2",
+    "numpy>=2.5",
     "scipy>=1.7.1",
     "pandas>=1.2.5",
     "numba",

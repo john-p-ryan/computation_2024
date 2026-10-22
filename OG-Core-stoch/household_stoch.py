@@ -342,7 +342,7 @@ def c_from_n(
 
     .. math::
         c_{j,s,t} = \left[ \frac{\tilde{p}_t \chi_s^n h'(n_{j,s,t})}{
-        w_t e_{j, s}z_{j, s}(1 - \tau^{p}_t - \tau^{mtrx}_{s,t})}
+        w_t e_{j, s}z_{j, s}(1 - \tau^{p}_{j,t} - \tau^{mtrx}_{s,t})}
         \right]^{-1/\sigma}
 
     Args:
@@ -368,7 +368,7 @@ def c_from_n(
         c (array_like): consumption implied by labor choice
     """
     idx = _tax_index(method, t)
-    tau_payroll = p.tau_payroll[idx]
+    tau_payroll = p.tau_payroll[idx, j]
     tax_noncompliance = p.labor_income_tax_noncompliance_rate[idx, j]
     income_tax_filer = p.income_tax_filer[idx, j]
     if e is None:
@@ -543,7 +543,7 @@ def get_net_taxes(
             p,
         )
         * (r * b + labor_income)
-        + p.tau_payroll[idx] * labor_income
+        + p.tau_payroll[idx, j] * labor_income
     )
     T_BQ = p.tau_bq[idx] * bq
     T_W = (
@@ -695,7 +695,7 @@ def FOC_labor(
     Computes errors for the FOC for labor supply.
 
     .. math::
-        w_t z e_{j,s}\bigl(1 - \tau^p_t - \tau^{mtrx}_{s,t}\bigr)
+        w_t z e_{j,s}\bigl(1 - \tau^p_{j,t} - \tau^{mtrx}_{s,t}\bigr)
        \frac{(c_{j,s,t})^{-\sigma}}{ \tilde{p}_{t}} = \chi^n_{s}
         \biggl(\frac{b}{\tilde{l}}\biggr)\biggl(\frac{n_{j,s,t}}
         {\tilde{l}}\biggr)^{\upsilon-1}\Biggl[1 -
@@ -728,7 +728,7 @@ def FOC_labor(
 
     """
     idx = _tax_index(method, t)
-    tau_payroll = p.tau_payroll[idx]
+    tau_payroll = p.tau_payroll[idx, j]
     tax_noncompliance = p.labor_income_tax_noncompliance_rate[idx, j]
     income_tax_filer = p.income_tax_filer[idx, j]
 
@@ -1097,7 +1097,6 @@ class LifecycleInputs:
     r: np.ndarray
     w: np.ndarray
     p_tilde: np.ndarray
-    tau_payroll: np.ndarray
     chi_n: np.ndarray
     h_wealth: np.ndarray
     m_wealth: np.ndarray
@@ -1109,6 +1108,7 @@ class LifecycleInputs:
     # by age and type
     e: np.ndarray
     rho: np.ndarray
+    tau_payroll: np.ndarray
     bq: np.ndarray
     rm: np.ndarray
     tr: np.ndarray
@@ -1173,6 +1173,7 @@ class LifecycleInputs:
 _BY_AGE_TYPE = (
     "e",
     "rho",
+    "tau_payroll",
     "bq",
     "rm",
     "tr",
@@ -1255,7 +1256,6 @@ def lifecycle_inputs_ss(
         r=full * r,
         w=full * w,
         p_tilde=full * p_tilde,
-        tau_payroll=full * p.tau_payroll[-1],
         chi_n=np.asarray(p.chi_n[-1], dtype=float).reshape(S),
         h_wealth=full * p.h_wealth[-1],
         m_wealth=full * p.m_wealth[-1],
@@ -1266,6 +1266,7 @@ def lifecycle_inputs_ss(
         mtry_params=_tax_params_by_age(p.mtry_params, S),
         e=np.ascontiguousarray(p.e[-1][:, js]),
         rho=_by_age_type(rho, S, J, js, "rho"),
+        tau_payroll=np.tile(p.tau_payroll[-1, js], (S, 1)),
         bq=bq_SJ,
         rm=_by_age_type(rm, S, J, js, "rm"),
         tr=_by_age_type(tr, S, J, js, "tr"),
@@ -1653,7 +1654,7 @@ class _NumbaBackend:
             pa["fw"],
             inp.r[s],
             inp.factor,
-            inp.tau_payroll[s],
+            pa["tp"],
             inp.h_wealth[s],
             inp.m_wealth[s],
             inp.p_wealth[s],
@@ -1689,7 +1690,7 @@ class _NumbaBackend:
             inp.g_y,
             inp.sigma,
             inp.factor,
-            inp.tau_payroll[s],
+            pa["tp"],
             inp.h_wealth[s],
             inp.m_wealth[s],
             inp.p_wealth[s],
@@ -1727,7 +1728,7 @@ class _NumbaBackend:
             inp.g_y,
             inp.sigma,
             inp.factor,
-            inp.tau_payroll[s],
+            pa["tp"],
             inp.h_wealth[s],
             inp.m_wealth[s],
             inp.p_wealth[s],
@@ -1812,7 +1813,7 @@ class _NumpyBackend:
         # same quantities as household_stoch_kernels._taxes; derivs is
         # False, "n" (derivatives in n only) or True
         inp = self.inp
-        r, f, tau_p = inp.r[s], inp.factor, inp.tau_payroll[s]
+        r, f, tau_p = inp.r[s], inp.factor, pa["tp"]
         wez, fi, lnc, knc, fw = (
             pa[k] for k in ("wez", "fi", "lnc", "knc", "fw")
         )
@@ -1856,7 +1857,7 @@ class _NumpyBackend:
     def _egm_eval(self, s, b, n, A, rhs, scale2, pa):
         # same as household_stoch_kernels._egm_eval, vectorized
         inp = self.inp
-        r, tau_p = inp.r[s], inp.tau_payroll[s]
+        r, tau_p = inp.r[s], pa["tp"]
         T, mtrx, dT_dn, dT_db, dm_dn, dm_db = self._taxes(s, b, n, pa, True)
         mdu, dmdu = kernels.mdu_n_np(
             n, inp.chi_n[s], inp.b_ellipse, inp.upsilon, inp.ltilde
@@ -1991,7 +1992,7 @@ class _NumpyBackend:
             - growth * bp_fix[idx]
         ) / denom
         dc = (wez - dT_dn) / denom
-        D = 1 - inp.tau_payroll[s] - mtrx
+        D = 1 - pai["tp"] - mtrx
         mu = kernels.mu_c_np(c, inp.sigma)
         dmu = kernels.mu_c_deriv_np(c, inp.sigma)
         mdu, dmdu = kernels.mdu_n_np(
@@ -2329,6 +2330,7 @@ def _point_arrays(inp, s, shape, z_grid):
         "lnc": inp.labor_nc[s],
         "knc": inp.capital_nc[s],
         "fw": inp.wealth_filer[s],
+        "tp": inp.tau_payroll[s],
     }
     pa = {k: _flat(v[:, None, None], shape) for k, v in by_type.items()}
     pa["wez"] = _flat(wez, shape)
@@ -2979,7 +2981,6 @@ def solve_HH(
         r=by_age(r),
         w=by_age(w),
         p_tilde=by_age(p_tilde),
-        tau_payroll=policy("tau_payroll"),
         chi_n=by_age(chi_n),
         h_wealth=policy("h_wealth"),
         m_wealth=policy("m_wealth"),
@@ -2990,6 +2991,7 @@ def solve_HH(
         mtry_params=mtry_params,
         e=by_age_col(e),
         rho=by_age_col(rho),
+        tau_payroll=policy_j("tau_payroll"),
         bq=bq_,
         rm=by_age_col(rm),
         tr=by_age_col(tr),
