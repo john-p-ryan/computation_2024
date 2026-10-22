@@ -42,14 +42,4 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
       - name: Test
-        run: uv run python -m pytest -m "not local" --cov=./ --cov-report=xml
-      - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && contains(github.repository, 'john-p-ryan/computation_2024')
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./coverage.xml
-          flags: unittests
-          name: codecov-umbrella
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
-          verbose: true
+        run: uv run python -m pytest -m "not local"
